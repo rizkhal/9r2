@@ -1,7 +1,18 @@
 import type { BucketDTO, RoutingMode, StorageDTO } from '@9r2/shared'
 import { useCallback, useEffect, useState, type FormEvent } from 'react'
-import { btn, input } from '../components/FileTable'
-import { api } from '../lib/api'
+import {
+  Alert,
+  Bar,
+  Button,
+  Eyebrow,
+  Field,
+  Icon,
+  Input,
+  Panel,
+  Tag,
+  cx,
+} from '../components/ui'
+import { api, copyText } from '../lib/api'
 import { formatBytes } from '../lib/format'
 
 const GB = 1024 * 1024 * 1024
@@ -9,7 +20,7 @@ const GB = 1024 * 1024 * 1024
 const modes: { value: RoutingMode; label: string; hint: string }[] = [
   { value: 'most_available', label: 'Most free space', hint: 'Uploads go to the account with the most room left.' },
   { value: 'round_robin', label: 'Round robin', hint: 'Uploads rotate evenly across eligible accounts.' },
-  { value: 'priority', label: 'Priority order', hint: 'Uploads try accounts in the order below, top first.' },
+  { value: 'priority', label: 'Priority order', hint: 'Uploads try accounts in the order listed, top first.' },
 ]
 
 type FormState = {
@@ -80,7 +91,9 @@ export function StoragePage() {
     if (!moved) return
     next.splice(target, 0, moved)
     setOrder(next)
-    void run(() => api('/api/storage/policy', { method: 'PUT', body: { mode: data?.routing.mode, priorityBucketIds: next } }))
+    void run(() =>
+      api('/api/storage/policy', { method: 'PUT', body: { mode: data?.routing.mode, priorityBucketIds: next } }),
+    )
   }
 
   function saveQuota(bucket: BucketDTO, gb: string) {
@@ -146,209 +159,321 @@ export function StoragePage() {
     .map((id) => data?.buckets.find((bucket) => bucket.id === id))
     .filter((bucket): bucket is BucketDTO => Boolean(bucket))
 
-  return (
-    <div className="space-y-6">
-      <div className="flex flex-wrap items-end justify-between gap-3">
-        <div>
-          <h1 className="text-2xl font-semibold tracking-tight">Storage</h1>
-          <p className="text-sm text-slate-500">Every connected account, combined space, and where new uploads land.</p>
-        </div>
-        <button
-          type="button"
-          className="rounded-md bg-indigo-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-indigo-500"
-          onClick={() => setShowForm((open) => !open)}
-        >
-          {showForm ? 'Cancel' : 'Add storage account'}
-        </button>
-      </div>
+  const usedRatio = data && data.totalQuotaBytes ? data.totalUsedBytes / data.totalQuotaBytes : 0
 
-      {error ? <p className="rounded-md bg-red-50 px-3 py-2 text-sm text-red-700 dark:bg-red-950 dark:text-red-300">{error}</p> : null}
-      {notice ? <p className="rounded-md bg-emerald-50 px-3 py-2 text-sm text-emerald-700 dark:bg-emerald-950 dark:text-emerald-300">{notice}</p> : null}
+  return (
+    <div className="rise space-y-7">
+      <header className="flex flex-wrap items-end justify-between gap-4">
+        <div>
+          <p className="font-mono text-[10px] uppercase tracking-[0.16em] text-faint">Storage</p>
+          <h1 className="mt-1.5 text-[26px] font-semibold leading-tight tracking-[-0.025em] text-ink">
+            Accounts &amp; routing
+          </h1>
+          <p className="mt-1 max-w-[62ch] text-[12.5px] leading-relaxed text-muted">
+            Every connected bucket, the space they share, and the order new uploads fill them.
+          </p>
+        </div>
+        <Button type="button" variant={showForm ? 'quiet' : 'primary'} onClick={() => setShowForm((open) => !open)}>
+          <Icon name={showForm ? 'close' : 'plus'} className="size-3.5" />
+          {showForm ? 'Cancel' : 'Add account'}
+        </Button>
+      </header>
+
+      {error ? <Alert>{error}</Alert> : null}
+      {notice ? <Alert tone="notice">{notice}</Alert> : null}
 
       {showForm ? (
-        <form onSubmit={addAccount} className="space-y-3 rounded-xl border border-slate-200 p-4 dark:border-slate-800">
-          <h2 className="text-sm font-semibold uppercase tracking-wide text-slate-500">New storage account</h2>
+        <Panel className="rise p-5">
+          <div className="mb-4 flex items-baseline justify-between">
+            <Eyebrow>New storage account</Eyebrow>
+            <span className="font-mono text-[10px] text-faint">credentials encrypted at rest</span>
+          </div>
 
-          <div className="grid gap-3 sm:grid-cols-2">
-            <label className="block text-sm">
-              <span className="mb-1 block font-medium">Name</span>
-              <input className={input} placeholder="Backup account" value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} required />
-            </label>
-            <label className="block text-sm">
-              <span className="mb-1 block font-medium">Type</span>
-              <select className={input} value={form.preset} onChange={(e) => setForm({ ...form, preset: e.target.value as 'r2' | 's3' })}>
-                <option value="r2">Cloudflare R2 (another account)</option>
-                <option value="s3">Other S3-compatible storage</option>
-              </select>
-            </label>
-
-            {form.preset === 'r2' ? (
-              <label className="block text-sm sm:col-span-2">
-                <span className="mb-1 block font-medium">Cloudflare account ID</span>
-                <input
-                  className={input}
-                  placeholder="023e105f4ecef8ad9ca31a8372d0c353"
-                  value={form.accountId}
-                  onChange={(e) => setForm({ ...form, accountId: e.target.value })}
+          <form onSubmit={addAccount} className="space-y-4">
+            <div className="grid gap-4 sm:grid-cols-2">
+              <Field label="Name">
+                <Input
+                  placeholder="Backup account"
+                  value={form.name}
+                  onChange={(e) => setForm({ ...form, name: e.target.value })}
                   required
                 />
-                <span className="mt-1 block text-xs text-slate-500">
-                  Dashboard → R2 → Manage R2 API Tokens. Endpoint becomes https://&lt;account-id&gt;.r2.cloudflarestorage.com
-                </span>
-              </label>
-            ) : (
-              <>
-                <label className="block text-sm sm:col-span-2">
-                  <span className="mb-1 block font-medium">Endpoint</span>
-                  <input className={input} placeholder="https://s3.us-west-002.backblazeb2.com" value={form.endpoint} onChange={(e) => setForm({ ...form, endpoint: e.target.value })} required />
-                </label>
-                <label className="block text-sm">
-                  <span className="mb-1 block font-medium">Region</span>
-                  <input className={input} placeholder="auto" value={form.region} onChange={(e) => setForm({ ...form, region: e.target.value })} />
-                </label>
-              </>
-            )}
+              </Field>
+              <Field label="Type">
+                <select
+                  className="h-9 w-full rounded-control border border-line bg-surface px-2.5 text-[13px] text-ink focus:border-accent focus:outline-none focus:ring-[3px] focus:ring-accent/15"
+                  value={form.preset}
+                  onChange={(e) => setForm({ ...form, preset: e.target.value as 'r2' | 's3' })}
+                >
+                  <option value="r2">Cloudflare R2 (another account)</option>
+                  <option value="s3">Other S3-compatible storage</option>
+                </select>
+              </Field>
 
-            <label className="block text-sm">
-              <span className="mb-1 block font-medium">Bucket name</span>
-              <input className={input} placeholder="my-bucket" value={form.bucketName} onChange={(e) => setForm({ ...form, bucketName: e.target.value })} required />
-            </label>
-            <label className="block text-sm">
-              <span className="mb-1 block font-medium">Quota (GB, blank = unlimited)</span>
-              <input className={input} inputMode="decimal" value={form.quotaGb} onChange={(e) => setForm({ ...form, quotaGb: e.target.value })} />
-            </label>
-            <label className="block text-sm">
-              <span className="mb-1 block font-medium">Access key ID</span>
-              <input className={input} autoComplete="off" value={form.accessKeyId} onChange={(e) => setForm({ ...form, accessKeyId: e.target.value })} required />
-            </label>
-            <label className="block text-sm">
-              <span className="mb-1 block font-medium">Secret access key</span>
-              <input className={input} type="password" autoComplete="new-password" value={form.secretAccessKey} onChange={(e) => setForm({ ...form, secretAccessKey: e.target.value })} required />
-            </label>
-          </div>
+              {form.preset === 'r2' ? (
+                <Field
+                  className="sm:col-span-2"
+                  label="Cloudflare account ID"
+                  hint="Dashboard → R2 → Manage R2 API Tokens. The endpoint becomes https://<account-id>.r2.cloudflarestorage.com"
+                >
+                  <Input
+                    placeholder="023e105f4ecef8ad9ca31a8372d0c353"
+                    value={form.accountId}
+                    onChange={(e) => setForm({ ...form, accountId: e.target.value })}
+                    required
+                  />
+                </Field>
+              ) : (
+                <>
+                  <Field className="sm:col-span-2" label="Endpoint">
+                    <Input
+                      placeholder="https://s3.us-west-002.backblazeb2.com"
+                      value={form.endpoint}
+                      onChange={(e) => setForm({ ...form, endpoint: e.target.value })}
+                      required
+                    />
+                  </Field>
+                  <Field label="Region">
+                    <Input
+                      placeholder="auto"
+                      value={form.region}
+                      onChange={(e) => setForm({ ...form, region: e.target.value })}
+                    />
+                  </Field>
+                </>
+              )}
 
-          <div className="flex flex-wrap gap-2">
-            <button type="submit" disabled={busy} className="rounded-md bg-indigo-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-indigo-500 disabled:opacity-60">
-              {busy ? 'Working…' : 'Add account'}
-            </button>
-            <button type="button" className={btn} disabled={busy} onClick={() => void testConnection()}>
-              Test connection
-            </button>
-          </div>
-          <p className="text-xs text-slate-500">
-            Credentials are encrypted with the deployment secret and only used server-side. Reads and writes go through the Worker.
-          </p>
-        </form>
+              <Field label="Bucket name">
+                <Input
+                  placeholder="my-bucket"
+                  value={form.bucketName}
+                  onChange={(e) => setForm({ ...form, bucketName: e.target.value })}
+                  required
+                />
+              </Field>
+              <Field label="Quota" hint="Leave blank for unlimited.">
+                <Input
+                  inputMode="decimal"
+                  placeholder="GB"
+                  value={form.quotaGb}
+                  onChange={(e) => setForm({ ...form, quotaGb: e.target.value })}
+                />
+              </Field>
+              <Field label="Access key ID">
+                <Input
+                  autoComplete="off"
+                  value={form.accessKeyId}
+                  onChange={(e) => setForm({ ...form, accessKeyId: e.target.value })}
+                  required
+                />
+              </Field>
+              <Field label="Secret access key">
+                <Input
+                  type="password"
+                  autoComplete="new-password"
+                  value={form.secretAccessKey}
+                  onChange={(e) => setForm({ ...form, secretAccessKey: e.target.value })}
+                  required
+                />
+              </Field>
+            </div>
+
+            <div className="flex flex-wrap items-center gap-2 border-t border-line pt-4">
+              <Button type="submit" variant="primary" disabled={busy}>
+                {busy ? 'Working…' : 'Add account'}
+              </Button>
+              <Button type="button" disabled={busy} onClick={() => void testConnection()}>
+                Test connection
+              </Button>
+              <p className="ml-auto max-w-[42ch] text-[11px] leading-relaxed text-faint">
+                Keys are encrypted with the deployment secret and only used server-side. All reads and writes go
+                through the Worker.
+              </p>
+            </div>
+          </form>
+        </Panel>
       ) : null}
 
       {data ? (
         <>
-          <div className="grid gap-3 sm:grid-cols-3">
-            <div className="rounded-xl border border-slate-200 p-4 dark:border-slate-800">
-              <p className="text-xs uppercase tracking-wide text-slate-500">Used</p>
-              <p className="mt-1 text-2xl font-semibold">{formatBytes(data.totalUsedBytes)}</p>
+          <Panel className="grid gap-px overflow-hidden bg-line sm:grid-cols-[1.5fr_1fr_1fr]">
+            <div className="bg-surface p-5">
+              <Eyebrow>Used across accounts</Eyebrow>
+              <p className="mt-2 font-mono text-[30px] font-medium leading-none tracking-[-0.03em] tabular-nums text-ink">
+                {formatBytes(data.totalUsedBytes)}
+              </p>
+              <Bar value={usedRatio} className="mt-4" />
+              <p className="mt-2 font-mono text-[10.5px] tabular-nums text-faint">
+                {data.totalQuotaBytes
+                  ? `${(usedRatio * 100).toFixed(usedRatio < 0.1 ? 1 : 0)}% of ${formatBytes(data.totalQuotaBytes)}`
+                  : 'no quota set'}
+              </p>
             </div>
-            <div className="rounded-xl border border-slate-200 p-4 dark:border-slate-800">
-              <p className="text-xs uppercase tracking-wide text-slate-500">Quota</p>
-              <p className="mt-1 text-2xl font-semibold">{formatBytes(data.totalQuotaBytes)}</p>
+            <div className="bg-surface p-5">
+              <Eyebrow>Total quota</Eyebrow>
+              <p className="mt-2 font-mono text-[20px] font-medium tracking-[-0.02em] tabular-nums text-ink">
+                {formatBytes(data.totalQuotaBytes)}
+              </p>
+              <p className="mt-2 font-mono text-[10.5px] text-faint">sum of per-account limits</p>
             </div>
-            <div className="rounded-xl border border-slate-200 p-4 dark:border-slate-800">
-              <p className="text-xs uppercase tracking-wide text-slate-500">Accounts</p>
-              <p className="mt-1 text-2xl font-semibold">{data.buckets.length}</p>
+            <div className="bg-surface p-5">
+              <Eyebrow>Accounts</Eyebrow>
+              <p className="mt-2 font-mono text-[20px] font-medium tracking-[-0.02em] tabular-nums text-ink">
+                {data.buckets.length}
+              </p>
+              <p className="mt-2 font-mono text-[10.5px] text-faint">
+                {data.buckets.filter((bucket) => bucket.kind === 's3').length} S3 ·{' '}
+                {data.buckets.filter((bucket) => bucket.kind === 'binding').length} bound
+              </p>
             </div>
-          </div>
+          </Panel>
 
           <section className="space-y-3">
-            <h2 className="text-sm font-semibold uppercase tracking-wide text-slate-500">Storage accounts</h2>
-            {orderedBuckets.length === 0 ? (
-              <p className="rounded-md border border-amber-300 bg-amber-50 px-3 py-2 text-sm text-amber-800 dark:border-amber-800 dark:bg-amber-950 dark:text-amber-300">
-                No storage accounts yet. Add one above, or declare an R2 binding in wrangler.jsonc.
-              </p>
-            ) : null}
-            <div className="space-y-2">
-              {orderedBuckets.map((bucket, index) => (
-                <div key={bucket.id} className="rounded-lg border border-slate-200 p-4 dark:border-slate-800">
-                  <div className="flex flex-wrap items-center justify-between gap-2">
-                    <div className="min-w-0">
-                      <p className="font-medium">
-                        {index + 1}. {bucket.name}
-                        <span className="ml-2 rounded bg-slate-100 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-slate-500 dark:bg-slate-800 dark:text-slate-400">
-                          {bucket.kind === 's3' ? 'S3' : 'binding'}
-                        </span>
-                      </p>
-                      <p className="truncate font-mono text-xs text-slate-500">{bucket.endpoint ?? bucket.binding}</p>
-                    </div>
-                    <div className="flex gap-1.5">
-                      <button type="button" className={btn} onClick={() => moveBucket(bucket.id, -1)} disabled={index === 0}>
-                        Up
-                      </button>
-                      <button
-                        type="button"
-                        className={btn}
-                        onClick={() => moveBucket(bucket.id, 1)}
-                        disabled={index === orderedBuckets.length - 1}
-                      >
-                        Down
-                      </button>
-                      {bucket.kind === 's3' ? (
-                        <button type="button" className={btn} onClick={() => removeAccount(bucket)}>
-                          Remove
-                        </button>
-                      ) : null}
-                    </div>
-                  </div>
-
-                  <div className="mt-3 flex flex-wrap items-center gap-3">
-                    <div className="h-2 min-w-40 flex-1 overflow-hidden rounded bg-slate-200 dark:bg-slate-800">
-                      <div
-                        className="h-full bg-indigo-500"
-                        style={{
-                          width: bucket.quotaBytes ? `${Math.min(100, (bucket.usedBytes / bucket.quotaBytes) * 100)}%` : '0%',
-                        }}
-                      />
-                    </div>
-                    <p className="text-xs text-slate-500">
-                      {formatBytes(bucket.usedBytes)} of {formatBytes(bucket.quotaBytes)} used
-                    </p>
-                    <label className="flex items-center gap-2 text-xs text-slate-500">
-                      Quota (GB)
-                      <input
-                        key={`${bucket.id}-${bucket.quotaBytes}`}
-                        className={`${input} w-24 px-2 py-1`}
-                        defaultValue={bucket.quotaBytes === null ? '' : String(bucket.quotaBytes / GB)}
-                        placeholder="unlimited"
-                        onBlur={(event) => saveQuota(bucket, event.target.value)}
-                      />
-                    </label>
-                  </div>
-                </div>
-              ))}
+            <div className="flex items-baseline justify-between">
+              <Eyebrow>Storage accounts</Eyebrow>
+              <span className="font-mono text-[10px] text-faint">top to bottom = priority</span>
             </div>
+
+            {orderedBuckets.length === 0 ? (
+              <Panel className="p-5">
+                <p className="text-[12.5px] leading-relaxed text-muted">
+                  No storage accounts yet. Add one above, or declare an R2 binding in wrangler.jsonc.
+                </p>
+              </Panel>
+            ) : (
+              <Panel className="overflow-hidden">
+                <ul className="divide-y divide-line">
+                  {orderedBuckets.map((bucket, index) => {
+                    const ratio = bucket.quotaBytes ? bucket.usedBytes / bucket.quotaBytes : 0
+                    return (
+                      <li key={bucket.id} className="px-4 py-4">
+                        <div className="flex flex-wrap items-start justify-between gap-3">
+                          <div className="flex min-w-0 items-start gap-3">
+                            <span className="mt-0.5 grid size-7 shrink-0 place-items-center rounded-[6px] border border-line bg-raise font-mono text-[10px] tabular-nums text-muted">
+                              {String(index + 1).padStart(2, '0')}
+                            </span>
+                            <div className="min-w-0">
+                              <p className="flex flex-wrap items-center gap-2 text-[13px] font-medium text-ink">
+                                {bucket.name}
+                                <Tag>{bucket.kind === 's3' ? 'S3' : 'binding'}</Tag>
+                              </p>
+                              <p className="truncate font-mono text-[10.5px] text-faint">
+                                {bucket.endpoint ?? bucket.binding}
+                              </p>
+                              <button
+                                type="button"
+                                onClick={() => void copyText(bucket.id).catch(() => undefined)}
+                                title="Copy bucket id"
+                                className="mt-0.5 flex max-w-full items-center gap-1.5 rounded-[3px] font-mono text-[10px] text-faint transition-colors hover:text-accent"
+                              >
+                                <span className="truncate">{bucket.id}</span>
+                                <Icon name="copy" className="size-3" />
+                              </button>
+                            </div>
+                          </div>
+
+                          <div className="flex items-center gap-1">
+                            <Button
+                              type="button"
+                              size="icon"
+                              title="Move up"
+                              aria-label={`Move ${bucket.name} up`}
+                              disabled={index === 0}
+                              onClick={() => moveBucket(bucket.id, -1)}
+                            >
+                              <Icon name="up" className="size-3.5" />
+                            </Button>
+                            <Button
+                              type="button"
+                              size="icon"
+                              title="Move down"
+                              aria-label={`Move ${bucket.name} down`}
+                              disabled={index === orderedBuckets.length - 1}
+                              onClick={() => moveBucket(bucket.id, 1)}
+                            >
+                              <Icon name="down" className="size-3.5" />
+                            </Button>
+                            {bucket.kind === 's3' ? (
+                              <Button
+                                type="button"
+                                size="icon"
+                                variant="ghost"
+                                title={`Remove ${bucket.name}`}
+                                aria-label={`Remove ${bucket.name}`}
+                                onClick={() => removeAccount(bucket)}
+                                className="text-faint hover:bg-danger-soft hover:text-danger"
+                              >
+                                <Icon name="trash" className="size-3.5" />
+                              </Button>
+                            ) : null}
+                          </div>
+                        </div>
+
+                        <div className="mt-3 flex flex-wrap items-center gap-3 pl-0 sm:pl-10">
+                          <Bar value={ratio} className="min-w-40 flex-1" />
+                          <p className="font-mono text-[10.5px] tabular-nums text-muted">
+                            {formatBytes(bucket.usedBytes)} / {formatBytes(bucket.quotaBytes)}
+                          </p>
+                          <label className="flex items-center gap-1.5 font-mono text-[9.5px] uppercase tracking-[0.1em] text-faint">
+                            quota
+                            <Input
+                              key={`${bucket.id}-${bucket.quotaBytes}`}
+                              defaultValue={bucket.quotaBytes === null ? '' : String(bucket.quotaBytes / GB)}
+                              placeholder="∞"
+                              aria-label={`Quota in GB for ${bucket.name}`}
+                              className="h-7 w-16 px-2 text-center font-mono text-[11px] tabular-nums"
+                              onBlur={(event) => saveQuota(bucket, event.target.value)}
+                            />
+                            GB
+                          </label>
+                        </div>
+                      </li>
+                    )
+                  })}
+                </ul>
+              </Panel>
+            )}
           </section>
 
           <section className="space-y-3">
-            <h2 className="text-sm font-semibold uppercase tracking-wide text-slate-500">Upload routing</h2>
-            <div className="grid gap-2 sm:grid-cols-3">
-              {modes.map((mode) => (
-                <button
-                  key={mode.value}
-                  type="button"
-                  onClick={() => saveMode(mode.value)}
-                  className={`rounded-lg border p-3 text-left ${
-                    data.routing.mode === mode.value
-                      ? 'border-indigo-500 bg-indigo-50 dark:bg-indigo-950'
-                      : 'border-slate-200 hover:bg-slate-50 dark:border-slate-800 dark:hover:bg-slate-900'
-                  }`}
-                >
-                  <p className="text-sm font-medium">{mode.label}</p>
-                  <p className="mt-1 text-xs text-slate-500">{mode.hint}</p>
-                </button>
-              ))}
+            <Eyebrow>Upload routing</Eyebrow>
+            <div className="overflow-hidden rounded-panel border border-line bg-surface">
+              {modes.map((mode, index) => {
+                const active = data.routing.mode === mode.value
+                return (
+                  <button
+                    key={mode.value}
+                    type="button"
+                    onClick={() => saveMode(mode.value)}
+                    aria-pressed={active}
+                    className={cx(
+                      'flex w-full items-start gap-3 px-4 py-3.5 text-left transition-colors hover:bg-raise',
+                      index > 0 && 'border-t border-line',
+                    )}
+                  >
+                    <span
+                      className={cx(
+                        'mt-[3px] grid size-4 shrink-0 place-items-center rounded-full border transition-colors',
+                        active ? 'border-accent' : 'border-line2',
+                      )}
+                    >
+                      {active ? <span className="size-[7px] rounded-full bg-accent" /> : null}
+                    </span>
+                    <span className="min-w-0">
+                      <span className="block text-[13px] font-medium text-ink">{mode.label}</span>
+                      <span className="block text-[12px] leading-relaxed text-muted">{mode.hint}</span>
+                    </span>
+                  </button>
+                )
+              })}
             </div>
           </section>
         </>
       ) : (
-        <p className="text-sm text-slate-500">Loading…</p>
+        <div className="space-y-3">
+          <div className="h-[104px] animate-pulse rounded-panel border border-line bg-raise/60" />
+          <div className="h-40 animate-pulse rounded-panel border border-line bg-raise/60" />
+        </div>
       )}
     </div>
   )

@@ -4,6 +4,7 @@ import type { AppEnv } from './env'
 import { errorCodes } from './lib/http'
 import { apiKeyRoutes } from './routes/api-keys'
 import { authRoutes } from './routes/auth'
+import { bucketRoutes } from './routes/buckets'
 import { fileRoutes } from './routes/files'
 import { folderRoutes } from './routes/folders'
 import { publicRoutes } from './routes/public'
@@ -15,6 +16,7 @@ app.get('/health', (c) => c.json({ status: 'ok' }))
 
 app.route('/api/auth', authRoutes)
 app.route('/api/api-keys', apiKeyRoutes)
+app.route('/api/buckets', bucketRoutes)
 app.route('/api/files', fileRoutes)
 app.route('/api/folders', folderRoutes)
 app.route('/api/storage', storageRoutes)

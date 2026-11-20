@@ -32,7 +32,7 @@ export const bucketPatchSchema = z.object({
   priority: z.number().int().optional(),
 })
 
-export const apiKeyScopes = ['files:read', 'files:write', 'files:delete'] as const
+export const apiKeyScopes = ['files:read', 'files:write', 'files:delete', 'storage:manage'] as const
 export type ApiKeyScope = (typeof apiKeyScopes)[number]
 
 export const apiKeyCreateSchema = z.object({
@@ -86,6 +86,16 @@ export type BucketDTO = {
   binding: string | null
   name: string
   endpoint: string | null
+  usedBytes: number
+  quotaBytes: number | null
+  priority: number
+}
+
+/** What an API key may see: enough to pick a bucket id, nothing about credentials. */
+export type BucketSummaryDTO = {
+  id: string
+  name: string
+  kind: 'binding' | 's3'
   usedBytes: number
   quotaBytes: number | null
   priority: number

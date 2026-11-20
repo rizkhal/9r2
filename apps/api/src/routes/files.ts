@@ -28,7 +28,7 @@ type FileRow = {
   createdAt: number
 }
 
-const fileSelection = {
+export const fileSelection = {
   id: files.id,
   name: files.name,
   mimeType: files.mimeType,
@@ -41,7 +41,7 @@ const fileSelection = {
   createdAt: files.createdAt,
 }
 
-function toFileDTO(row: FileRow): FileDTO {
+export function toFileDTO(row: FileRow): FileDTO {
   return {
     id: row.id,
     name: row.name,

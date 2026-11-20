@@ -1,0 +1,20 @@
+{
+  "name": "@9r2/cf-bootstrap",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "start": "bun src/index.ts",
+    "login": "bun src/index.ts login",
+    "accounts": "bun src/index.ts accounts",
+    "provision": "bun src/index.ts provision",
+    "batch": "bun src/index.ts batch",
+    "test": "bun test"
+  },
+  "dependencies": {
+    "aws4fetch": "^1.0.20"
+  },
+  "devDependencies": {
+    "@types/node": "^25.9.1",
+    "typescript": "^5.9.3"
+  }
+}

@@ -35,6 +35,13 @@
       "bucket_name": "9r2-primary"
     }
   ],
+  "ratelimits": [
+    {
+      "name": "LOGIN_RATE_LIMITER",
+      "namespace_id": "1001",
+      "simple": { "limit": 10, "period": 60 }
+    }
+  ],
   "vars": {
     "BUCKET_CONFIG": "[{\"binding\":\"R2_PRIMARY\",\"name\":\"Primary bucket\",\"quotaBytes\":10737418240}]",
     "MAX_UPLOAD_BYTES": "104857600"
