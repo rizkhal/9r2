@@ -15,9 +15,13 @@ export function randomToken(bytes = 32) {
     .replace(/=+$/, '')
 }
 
+export function hex(bytes: ArrayBuffer | Uint8Array) {
+  const view = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes)
+  return [...view].map((byte) => byte.toString(16).padStart(2, '0')).join('')
+}
+
 export async function sha256Hex(value: string) {
-  const digest = await crypto.subtle.digest('SHA-256', enc.encode(value))
-  return [...new Uint8Array(digest)].map((byte) => byte.toString(16).padStart(2, '0')).join('')
+  return hex(await crypto.subtle.digest('SHA-256', enc.encode(value)))
 }
 
 async function aesKey(secret: string) {

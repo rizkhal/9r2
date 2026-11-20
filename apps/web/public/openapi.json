@@ -1,0 +1,947 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "9r2 storage API",
+    "version": "1.0.0",
+    "summary": "Files, folders and storage accounts behind one sign-in.",
+    "description": "All routes are served by a single Worker. Two credentials are accepted:\n\n- **Session cookie** (`sid`, set by `POST /api/auth/login`) — full access, including storage accounts and API-key management.\n- **API key** (`Authorization: Bearer 9r2_…`) — scoped. A key reaches `/api/files`, `/api/folders` and `/api/buckets` only.\n\nErrors are `{ code, message }` with the HTTP status carrying the meaning."
+  },
+  "servers": [{ "url": "/", "description": "This deployment" }],
+  "tags": [
+    { "name": "auth", "description": "Sign-in. Session cookie only." },
+    { "name": "files", "description": "Upload, list, download, share, trash." },
+    { "name": "folders", "description": "Flat folder records; the hierarchy is a parentId pointer." },
+    { "name": "buckets", "description": "Storage accounts, reachable with an API key." },
+    { "name": "storage", "description": "Quotas and upload routing. Session cookie only." },
+    { "name": "api-keys", "description": "Key management. Session cookie only." },
+    { "name": "public", "description": "Share links. No authentication." }
+  ],
+  "paths": {
+    "/health": {
+      "get": {
+        "tags": ["auth"],
+        "summary": "Liveness probe",
+        "security": [],
+        "responses": {
+          "200": {
+            "description": "Worker is up",
+            "content": { "application/json": { "schema": { "type": "object", "properties": { "status": { "type": "string", "const": "ok" } } } } }
+          }
+        }
+      }
+    },
+    "/api/auth/login": {
+      "post": {
+        "tags": ["auth"],
+        "summary": "Sign in",
+        "description": "The deployment has a single account. Credentials are compared against `ADMIN_EMAIL` / `ADMIN_PASSWORD`. Limited to 10 attempts per minute per IP; a 429 means wait, not a wrong password.",
+        "security": [],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": ["email", "password"],
+                "properties": {
+                  "email": { "type": "string", "maxLength": 191 },
+                  "password": { "type": "string", "maxLength": 200 }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Signed in; sets the `sid` cookie",
+            "content": { "application/json": { "schema": { "type": "object", "properties": { "user": { "$ref": "#/components/schemas/User" } } } } }
+          },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "429": { "$ref": "#/components/responses/RateLimited" }
+        }
+      }
+    },
+    "/api/auth/logout": {
+      "post": {
+        "tags": ["auth"],
+        "summary": "Sign out",
+        "description": "Deletes the session row and clears the cookie.",
+        "security": [],
+        "responses": {
+          "200": { "$ref": "#/components/responses/Ok" }
+        }
+      }
+    },
+    "/api/auth/me": {
+      "get": {
+        "tags": ["auth"],
+        "summary": "Current user",
+        "security": [{ "sessionCookie": [] }],
+        "responses": {
+          "200": {
+            "description": "The signed-in user",
+            "content": { "application/json": { "schema": { "type": "object", "properties": { "user": { "$ref": "#/components/schemas/User" } } } } }
+          },
+          "401": { "$ref": "#/components/responses/Unauthorized" }
+        }
+      }
+    },
+
+    "/api/files": {
+      "get": {
+        "tags": ["files"],
+        "summary": "List files",
+        "description": "Newest first, capped at 500 rows. Requires `files:read`.",
+        "security": [{ "sessionCookie": [] }, { "bearerAuth": [] }],
+        "parameters": [
+          { "name": "folderId", "in": "query", "schema": { "type": "string" }, "description": "Only files in this folder. Ignored when `status=trash`." },
+          { "name": "q", "in": "query", "schema": { "type": "string" }, "description": "Substring match on the name." },
+          { "name": "status", "in": "query", "schema": { "type": "string", "enum": ["trash"] }, "description": "`trash` lists deleted files instead." }
+        ],
+        "responses": {
+          "200": {
+            "description": "Matching files",
+            "content": { "application/json": { "schema": { "type": "object", "properties": { "files": { "type": "array", "items": { "$ref": "#/components/schemas/File" } } } } } }
+          },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "403": { "$ref": "#/components/responses/Forbidden" }
+        }
+      },
+      "post": {
+        "tags": ["files"],
+        "summary": "Upload a file",
+        "description": "The raw bytes are the request body; metadata goes in headers. The body is streamed straight to storage and hashed on the way past, so `sha256` is only known once the upload completes. Identical content is stored as a separate file — the hash identifies, it does not deduplicate. Requires `files:write`.",
+        "security": [{ "sessionCookie": [] }, { "bearerAuth": [] }],
+        "parameters": [
+          { "name": "x-file-name", "in": "header", "required": true, "schema": { "type": "string" }, "description": "Percent-encoded file name." },
+          { "name": "x-mime-type", "in": "header", "schema": { "type": "string", "default": "application/octet-stream" } },
+          { "name": "x-folder-id", "in": "header", "schema": { "type": "string" }, "description": "Target folder; omit for the root." },
+          { "name": "Content-Length", "in": "header", "required": true, "schema": { "type": "integer", "minimum": 1 }, "description": "Required. Checked against the size the provider reports." }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": { "application/octet-stream": { "schema": { "type": "string", "format": "binary" } } }
+        },
+        "responses": {
+          "201": {
+            "description": "Stored",
+            "content": { "application/json": { "schema": { "type": "object", "properties": { "file": { "$ref": "#/components/schemas/File" } } } } }
+          },
+          "400": { "$ref": "#/components/responses/BadRequest" },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "403": { "$ref": "#/components/responses/Forbidden" },
+          "404": { "description": "`x-folder-id` does not name one of your folders" },
+          "409": { "description": "No storage account has enough free space" },
+          "411": { "description": "`Content-Length` missing" },
+          "413": { "description": "Larger than `MAX_UPLOAD_BYTES`" },
+          "502": { "$ref": "#/components/responses/StorageError" }
+        }
+      }
+    },
+    "/api/files/{id}": {
+      "patch": {
+        "tags": ["files"],
+        "summary": "Rename, move or star a file",
+        "description": "Requires `files:write`. Send only the fields you are changing.",
+        "security": [{ "sessionCookie": [] }, { "bearerAuth": [] }],
+        "parameters": [{ "$ref": "#/components/parameters/FileId" }],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "name": { "type": "string", "maxLength": 255 },
+                  "folderId": { "type": ["string", "null"], "description": "`null` moves the file to the root." },
+                  "starred": { "type": "boolean" }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Updated file",
+            "content": { "application/json": { "schema": { "type": "object", "properties": { "file": { "$ref": "#/components/schemas/File" } } } } }
+          },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "403": { "$ref": "#/components/responses/Forbidden" },
+          "404": { "$ref": "#/components/responses/NotFound" }
+        }
+      },
+      "delete": {
+        "tags": ["files"],
+        "summary": "Move a file to trash",
+        "description": "The object stays in storage and keeps occupying quota until it is deleted permanently. Requires `files:delete`.",
+        "security": [{ "sessionCookie": [] }, { "bearerAuth": [] }],
+        "parameters": [{ "$ref": "#/components/parameters/FileId" }],
+        "responses": {
+          "200": { "$ref": "#/components/responses/Ok" },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "403": { "$ref": "#/components/responses/Forbidden" },
+          "404": { "$ref": "#/components/responses/NotFound" }
+        }
+      }
+    },
+    "/api/files/{id}/restore": {
+      "post": {
+        "tags": ["files"],
+        "summary": "Restore from trash",
+        "description": "Requires `files:write`.",
+        "security": [{ "sessionCookie": [] }, { "bearerAuth": [] }],
+        "parameters": [{ "$ref": "#/components/parameters/FileId" }],
+        "responses": {
+          "200": { "$ref": "#/components/responses/Ok" },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "403": { "$ref": "#/components/responses/Forbidden" },
+          "404": { "$ref": "#/components/responses/NotFound" }
+        }
+      }
+    },
+    "/api/files/{id}/permanent": {
+      "delete": {
+        "tags": ["files"],
+        "summary": "Delete forever",
+        "description": "Removes the row and the stored object. Requires `files:delete`.",
+        "security": [{ "sessionCookie": [] }, { "bearerAuth": [] }],
+        "parameters": [{ "$ref": "#/components/parameters/FileId" }],
+        "responses": {
+          "200": { "$ref": "#/components/responses/Ok" },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "403": { "$ref": "#/components/responses/Forbidden" },
+          "404": { "$ref": "#/components/responses/NotFound" }
+        }
+      }
+    },
+    "/api/files/{id}/content": {
+      "get": {
+        "tags": ["files"],
+        "summary": "Download or preview content",
+        "description": "Streams through the Worker; no presigned URLs. Supports a single `Range` request, so seeking and resumed downloads work. Requires `files:read`.",
+        "security": [{ "sessionCookie": [] }, { "bearerAuth": [] }],
+        "parameters": [
+          { "$ref": "#/components/parameters/FileId" },
+          { "name": "download", "in": "query", "schema": { "type": "string", "enum": ["1"] }, "description": "`1` sends `Content-Disposition: attachment`." },
+          { "name": "Range", "in": "header", "schema": { "type": "string", "example": "bytes=0-1023" } }
+        ],
+        "responses": {
+          "200": {
+            "description": "The bytes",
+            "headers": {
+              "Content-Disposition": { "schema": { "type": "string" } },
+              "Accept-Ranges": { "schema": { "type": "string", "const": "bytes" } }
+            },
+            "content": { "application/octet-stream": { "schema": { "type": "string", "format": "binary" } } }
+          },
+          "206": { "description": "Partial content" },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "403": { "$ref": "#/components/responses/Forbidden" },
+          "404": { "$ref": "#/components/responses/NotFound" }
+        }
+      }
+    },
+    "/api/files/{id}/move-storage": {
+      "post": {
+        "tags": ["files"],
+        "summary": "Move a file to another storage account",
+        "description": "Copies the object, repoints the row, then deletes the old copy. A failure after the copy leaves an orphan, never a lost file. Requires `files:write`.",
+        "security": [{ "sessionCookie": [] }, { "bearerAuth": [] }],
+        "parameters": [{ "$ref": "#/components/parameters/FileId" }],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "type": "object", "required": ["bucketId"], "properties": { "bucketId": { "type": "string" } } }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Moved",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": { "status": { "type": "string" }, "bucketId": { "type": "string" }, "bucketName": { "type": "string" } }
+                }
+              }
+            }
+          },
+          "400": { "description": "Already in that account" },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "403": { "$ref": "#/components/responses/Forbidden" },
+          "404": { "$ref": "#/components/responses/NotFound" },
+          "409": { "description": "Target account is out of space" },
+          "502": { "$ref": "#/components/responses/StorageError" }
+        }
+      }
+    },
+    "/api/files/{id}/share": {
+      "post": {
+        "tags": ["files"],
+        "summary": "Create or reuse a share link",
+        "description": "Returns the existing active link if there is one. Requires `files:write`.",
+        "security": [{ "sessionCookie": [] }, { "bearerAuth": [] }],
+        "parameters": [{ "$ref": "#/components/parameters/FileId" }],
+        "responses": {
+          "200": {
+            "description": "Existing link reused",
+            "content": { "application/json": { "schema": { "type": "object", "properties": { "url": { "type": "string", "format": "uri" } } } } }
+          },
+          "201": {
+            "description": "New link created",
+            "content": { "application/json": { "schema": { "type": "object", "properties": { "url": { "type": "string", "format": "uri" } } } } }
+          },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "403": { "$ref": "#/components/responses/Forbidden" },
+          "404": { "$ref": "#/components/responses/NotFound" }
+        }
+      },
+      "delete": {
+        "tags": ["files"],
+        "summary": "Revoke share links",
+        "description": "Requires `files:write`.",
+        "security": [{ "sessionCookie": [] }, { "bearerAuth": [] }],
+        "parameters": [{ "$ref": "#/components/parameters/FileId" }],
+        "responses": {
+          "200": { "$ref": "#/components/responses/Ok" },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "403": { "$ref": "#/components/responses/Forbidden" },
+          "404": { "$ref": "#/components/responses/NotFound" }
+        }
+      }
+    },
+    "/api/files/shared": {
+      "get": {
+        "tags": ["files"],
+        "summary": "List active share links",
+        "description": "Expired links are filtered out. Requires `files:read`.",
+        "security": [{ "sessionCookie": [] }, { "bearerAuth": [] }],
+        "responses": {
+          "200": {
+            "description": "Share links with their URLs",
+            "content": { "application/json": { "schema": { "type": "object", "properties": { "shares": { "type": "array", "items": { "$ref": "#/components/schemas/Share" } } } } } }
+          },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "403": { "$ref": "#/components/responses/Forbidden" }
+        }
+      }
+    },
+
+    "/api/folders": {
+      "get": {
+        "tags": ["folders"],
+        "summary": "List folders",
+        "description": "No `parentId` returns every folder; `?parentId=<id>` returns one level; `?parentId=` returns the root. Requires `files:read`.",
+        "security": [{ "sessionCookie": [] }, { "bearerAuth": [] }],
+        "parameters": [
+          { "name": "parentId", "in": "query", "schema": { "type": "string" }, "description": "Empty string lists the root." }
+        ],
+        "responses": {
+          "200": {
+            "description": "Matching folders",
+            "content": { "application/json": { "schema": { "type": "object", "properties": { "folders": { "type": "array", "items": { "$ref": "#/components/schemas/Folder" } } } } } }
+          },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "403": { "$ref": "#/components/responses/Forbidden" }
+        }
+      },
+      "post": {
+        "tags": ["folders"],
+        "summary": "Create a folder",
+        "description": "Requires `files:write`.",
+        "security": [{ "sessionCookie": [] }, { "bearerAuth": [] }],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": ["name"],
+                "properties": {
+                  "name": { "type": "string", "maxLength": 120 },
+                  "parentId": { "type": ["string", "null"] }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Created",
+            "content": { "application/json": { "schema": { "type": "object", "properties": { "folder": { "$ref": "#/components/schemas/Folder" } } } } }
+          },
+          "400": { "$ref": "#/components/responses/BadRequest" },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "403": { "$ref": "#/components/responses/Forbidden" },
+          "404": { "description": "`parentId` does not name one of your folders" }
+        }
+      }
+    },
+    "/api/folders/{id}": {
+      "get": {
+        "tags": ["folders"],
+        "summary": "One folder with its contents",
+        "description": "Child folders and live files in a single call. Requires `files:read`.",
+        "security": [{ "sessionCookie": [] }, { "bearerAuth": [] }],
+        "parameters": [{ "$ref": "#/components/parameters/FolderId" }],
+        "responses": {
+          "200": {
+            "description": "The folder and its contents",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "folder": { "$ref": "#/components/schemas/Folder" },
+                    "folders": { "type": "array", "items": { "$ref": "#/components/schemas/Folder" } },
+                    "files": { "type": "array", "items": { "$ref": "#/components/schemas/File" } }
+                  }
+                }
+              }
+            }
+          },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "403": { "$ref": "#/components/responses/Forbidden" },
+          "404": { "$ref": "#/components/responses/NotFound" }
+        }
+      },
+      "patch": {
+        "tags": ["folders"],
+        "summary": "Rename or move a folder",
+        "description": "Requires `files:write`. A folder cannot be its own parent.",
+        "security": [{ "sessionCookie": [] }, { "bearerAuth": [] }],
+        "parameters": [{ "$ref": "#/components/parameters/FolderId" }],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "name": { "type": "string", "maxLength": 120 },
+                  "parentId": { "type": ["string", "null"] }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": { "$ref": "#/components/responses/Ok" },
+          "400": { "description": "The folder is its own parent" },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "403": { "$ref": "#/components/responses/Forbidden" },
+          "404": { "$ref": "#/components/responses/NotFound" }
+        }
+      },
+      "delete": {
+        "tags": ["folders"],
+        "summary": "Delete a folder",
+        "description": "Soft-deletes the folder; child folders move to the root and files inside it return to the root. Requires `files:write`.",
+        "security": [{ "sessionCookie": [] }, { "bearerAuth": [] }],
+        "parameters": [{ "$ref": "#/components/parameters/FolderId" }],
+        "responses": {
+          "200": { "$ref": "#/components/responses/Ok" },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "403": { "$ref": "#/components/responses/Forbidden" },
+          "404": { "$ref": "#/components/responses/NotFound" }
+        }
+      }
+    },
+
+    "/api/buckets": {
+      "get": {
+        "tags": ["buckets"],
+        "summary": "List storage accounts",
+        "description": "Summaries only: no endpoints and no credentials. Requires `files:read`.",
+        "security": [{ "sessionCookie": [] }, { "bearerAuth": [] }],
+        "responses": {
+          "200": {
+            "description": "Storage accounts",
+            "content": { "application/json": { "schema": { "type": "object", "properties": { "buckets": { "type": "array", "items": { "$ref": "#/components/schemas/BucketSummary" } } } } } }
+          },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "403": { "$ref": "#/components/responses/Forbidden" }
+        }
+      },
+      "post": {
+        "tags": ["buckets"],
+        "summary": "Add an S3-compatible storage account",
+        "description": "Credentials are verified against the endpoint before they are stored, then encrypted with the deployment secret. Requires `storage:manage` — a key holding it can point uploads at storage its holder controls, so grant it deliberately.",
+        "security": [{ "sessionCookie": [] }, { "bearerAuth": [] }],
+        "requestBody": {
+          "required": true,
+          "content": { "application/json": { "schema": { "$ref": "#/components/schemas/StorageAccountInput" } } }
+        },
+        "responses": {
+          "201": {
+            "description": "Added",
+            "content": { "application/json": { "schema": { "type": "object", "properties": { "id": { "type": "string" } } } } }
+          },
+          "400": { "description": "Credentials rejected or body invalid" },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "403": { "$ref": "#/components/responses/Forbidden" },
+          "409": { "description": "That bucket is already connected" }
+        }
+      }
+    },
+    "/api/buckets/{id}": {
+      "get": {
+        "tags": ["buckets"],
+        "summary": "One storage account",
+        "description": "Requires `files:read`.",
+        "security": [{ "sessionCookie": [] }, { "bearerAuth": [] }],
+        "parameters": [{ "$ref": "#/components/parameters/BucketId" }],
+        "responses": {
+          "200": {
+            "description": "The account",
+            "content": { "application/json": { "schema": { "type": "object", "properties": { "bucket": { "$ref": "#/components/schemas/BucketSummary" } } } } }
+          },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "403": { "$ref": "#/components/responses/Forbidden" },
+          "404": { "$ref": "#/components/responses/NotFound" }
+        }
+      },
+      "delete": {
+        "tags": ["buckets"],
+        "summary": "Remove a storage account",
+        "description": "Only S3 accounts, and only when they hold no files. Accounts declared in `wrangler.jsonc` cannot be removed here. Requires `storage:manage`.",
+        "security": [{ "sessionCookie": [] }, { "bearerAuth": [] }],
+        "parameters": [{ "$ref": "#/components/parameters/BucketId" }],
+        "responses": {
+          "200": { "$ref": "#/components/responses/Ok" },
+          "400": { "description": "Account comes from `wrangler.jsonc`" },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "403": { "$ref": "#/components/responses/Forbidden" },
+          "404": { "$ref": "#/components/responses/NotFound" },
+          "409": { "description": "The account still holds files" }
+        }
+      }
+    },
+
+    "/api/storage": {
+      "get": {
+        "tags": ["storage"],
+        "summary": "Accounts, usage and routing",
+        "description": "Session cookie only; API keys cannot reach this route.",
+        "security": [{ "sessionCookie": [] }],
+        "responses": {
+          "200": {
+            "description": "Storage overview",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Storage" } } }
+          },
+          "401": { "$ref": "#/components/responses/Unauthorized" }
+        }
+      }
+    },
+    "/api/storage/accounts/test": {
+      "post": {
+        "tags": ["storage"],
+        "summary": "Test credentials without saving",
+        "description": "Returns 200 with `{ ok, message }` on success and 400 with the same shape on failure.",
+        "security": [{ "sessionCookie": [] }],
+        "requestBody": {
+          "required": true,
+          "content": { "application/json": { "schema": { "$ref": "#/components/schemas/StorageAccountInput" } } }
+        },
+        "responses": {
+          "200": {
+            "description": "Reachable",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": { "ok": { "type": "boolean" }, "message": { "type": "string" } }
+                }
+              }
+            }
+          },
+          "400": { "description": "Not reachable or credentials rejected" },
+          "401": { "$ref": "#/components/responses/Unauthorized" }
+        }
+      }
+    },
+    "/api/storage/accounts": {
+      "post": {
+        "tags": ["storage"],
+        "summary": "Add a storage account (browser)",
+        "description": "Same behaviour as `POST /api/buckets`, without the scope requirement because the session has full access.",
+        "security": [{ "sessionCookie": [] }],
+        "requestBody": {
+          "required": true,
+          "content": { "application/json": { "schema": { "$ref": "#/components/schemas/StorageAccountInput" } } }
+        },
+        "responses": {
+          "201": {
+            "description": "Added",
+            "content": { "application/json": { "schema": { "type": "object", "properties": { "id": { "type": "string" } } } } }
+          },
+          "400": { "$ref": "#/components/responses/BadRequest" },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "409": { "description": "That bucket is already connected" }
+        }
+      }
+    },
+    "/api/storage/accounts/{id}": {
+      "delete": {
+        "tags": ["storage"],
+        "summary": "Remove a storage account (browser)",
+        "security": [{ "sessionCookie": [] }],
+        "parameters": [{ "$ref": "#/components/parameters/BucketId" }],
+        "responses": {
+          "200": { "$ref": "#/components/responses/Ok" },
+          "400": { "description": "Account comes from `wrangler.jsonc`" },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "404": { "$ref": "#/components/responses/NotFound" },
+          "409": { "description": "The account still holds files" }
+        }
+      }
+    },
+    "/api/storage/buckets/{id}": {
+      "patch": {
+        "tags": ["storage"],
+        "summary": "Set a quota or priority",
+        "security": [{ "sessionCookie": [] }],
+        "parameters": [{ "$ref": "#/components/parameters/BucketId" }],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "quotaBytes": { "type": ["integer", "null"], "minimum": 0, "description": "`null` means unlimited." },
+                  "priority": { "type": "integer" }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": { "$ref": "#/components/responses/Ok" },
+          "401": { "$ref": "#/components/responses/Unauthorized" }
+        }
+      }
+    },
+    "/api/storage/policy": {
+      "put": {
+        "tags": ["storage"],
+        "summary": "Choose where uploads land",
+        "security": [{ "sessionCookie": [] }],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": ["mode", "priorityBucketIds"],
+                "properties": {
+                  "mode": { "$ref": "#/components/schemas/RoutingMode" },
+                  "priorityBucketIds": { "type": "array", "maxItems": 50, "items": { "type": "string" } }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": { "$ref": "#/components/responses/Ok" },
+          "401": { "$ref": "#/components/responses/Unauthorized" }
+        }
+      }
+    },
+
+    "/api/api-keys": {
+      "get": {
+        "tags": ["api-keys"],
+        "summary": "List keys",
+        "description": "Session cookie only. A key must never manage keys.",
+        "security": [{ "sessionCookie": [] }],
+        "responses": {
+          "200": {
+            "description": "Keys, newest first",
+            "content": { "application/json": { "schema": { "type": "object", "properties": { "apiKeys": { "type": "array", "items": { "$ref": "#/components/schemas/ApiKey" } } } } } }
+          },
+          "401": { "$ref": "#/components/responses/Unauthorized" }
+        }
+      },
+      "post": {
+        "tags": ["api-keys"],
+        "summary": "Create a key",
+        "description": "The secret is returned exactly once and is stored only as a hash.",
+        "security": [{ "sessionCookie": [] }],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": ["name", "scopes"],
+                "properties": {
+                  "name": { "type": "string", "maxLength": 80 },
+                  "scopes": { "type": "array", "minItems": 1, "items": { "$ref": "#/components/schemas/ApiKeyScope" } }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Created",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "apiKey": { "$ref": "#/components/schemas/ApiKey" },
+                    "secret": { "type": "string", "description": "Shown once; starts with `9r2_`." }
+                  }
+                }
+              }
+            }
+          },
+          "400": { "$ref": "#/components/responses/BadRequest" },
+          "401": { "$ref": "#/components/responses/Unauthorized" }
+        }
+      }
+    },
+    "/api/api-keys/{id}": {
+      "delete": {
+        "tags": ["api-keys"],
+        "summary": "Revoke a key",
+        "description": "Takes effect immediately.",
+        "security": [{ "sessionCookie": [] }],
+        "parameters": [{ "name": "id", "in": "path", "required": true, "schema": { "type": "string" } }],
+        "responses": {
+          "200": { "$ref": "#/components/responses/Ok" },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "404": { "description": "Unknown key, or already revoked" }
+        }
+      }
+    },
+
+    "/public/files/{token}": {
+      "get": {
+        "tags": ["public"],
+        "summary": "Shared file metadata",
+        "description": "No authentication. Anyone holding the link can read this.",
+        "security": [],
+        "parameters": [{ "$ref": "#/components/parameters/ShareToken" }],
+        "responses": {
+          "200": {
+            "description": "File metadata",
+            "content": { "application/json": { "schema": { "type": "object", "properties": { "file": { "$ref": "#/components/schemas/PublicFile" } } } } }
+          },
+          "404": { "$ref": "#/components/responses/NotFound" }
+        }
+      }
+    },
+    "/public/files/{token}/content": {
+      "get": {
+        "tags": ["public"],
+        "summary": "Shared file content",
+        "description": "No authentication. Supports `Range` like the authenticated download.",
+        "security": [],
+        "parameters": [
+          { "$ref": "#/components/parameters/ShareToken" },
+          { "name": "download", "in": "query", "schema": { "type": "string", "enum": ["1"] } },
+          { "name": "Range", "in": "header", "schema": { "type": "string" } }
+        ],
+        "responses": {
+          "200": {
+            "description": "The bytes",
+            "content": { "application/octet-stream": { "schema": { "type": "string", "format": "binary" } } }
+          },
+          "206": { "description": "Partial content" },
+          "404": { "$ref": "#/components/responses/NotFound" }
+        }
+      }
+    }
+  },
+  "components": {
+    "securitySchemes": {
+      "bearerAuth": {
+        "type": "http",
+        "scheme": "bearer",
+        "description": "An API key from the app's API keys page, prefixed `9r2_`. Carries the scopes listed on the key."
+      },
+      "sessionCookie": {
+        "type": "apiKey",
+        "in": "cookie",
+        "name": "sid",
+        "description": "Set by `POST /api/auth/login`. Full access for this deployment's single account."
+      }
+    },
+    "parameters": {
+      "FileId": { "name": "id", "in": "path", "required": true, "schema": { "type": "string" }, "description": "File id" },
+      "FolderId": { "name": "id", "in": "path", "required": true, "schema": { "type": "string" }, "description": "Folder id" },
+      "BucketId": { "name": "id", "in": "path", "required": true, "schema": { "type": "string" }, "description": "Storage account id" },
+      "ShareToken": { "name": "token", "in": "path", "required": true, "schema": { "type": "string" }, "description": "The token from a share URL (`/f/<token>`)" }
+    },
+    "responses": {
+      "Ok": {
+        "description": "Done",
+        "content": { "application/json": { "schema": { "type": "object", "properties": { "status": { "type": "string", "const": "ok" } } } } }
+      },
+      "BadRequest": {
+        "description": "Invalid request body",
+        "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } }
+      },
+      "Unauthorized": {
+        "description": "No valid session or key",
+        "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } }
+      },
+      "Forbidden": {
+        "description": "The key lacks the scope this route needs",
+        "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } }
+      },
+      "NotFound": {
+        "description": "Not found, or not yours",
+        "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } }
+      },
+      "RateLimited": {
+        "description": "Too many attempts; wait before retrying",
+        "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } }
+      },
+      "StorageError": {
+        "description": "The storage backend rejected the operation",
+        "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } }
+      }
+    },
+    "schemas": {
+      "Error": {
+        "type": "object",
+        "required": ["code", "message"],
+        "properties": {
+          "code": { "type": "string", "example": "NOT_FOUND" },
+          "message": { "type": "string", "example": "File not found." }
+        }
+      },
+      "User": {
+        "type": "object",
+        "properties": {
+          "id": { "type": "string" },
+          "name": { "type": "string" },
+          "email": { "type": "string" }
+        }
+      },
+      "File": {
+        "type": "object",
+        "properties": {
+          "id": { "type": "string" },
+          "name": { "type": "string" },
+          "mimeType": { "type": "string" },
+          "sizeBytes": { "type": "integer" },
+          "sha256": { "type": ["string", "null"], "description": "Hex digest of the content. Null for files stored before hashing existed." },
+          "folderId": { "type": ["string", "null"] },
+          "bucketId": { "type": "string" },
+          "bucketName": { "type": "string" },
+          "starred": { "type": "boolean" },
+          "deletedAt": { "type": ["integer", "null"], "description": "Epoch milliseconds; null while live." },
+          "createdAt": { "type": "integer", "description": "Epoch milliseconds." }
+        }
+      },
+      "Folder": {
+        "type": "object",
+        "properties": {
+          "id": { "type": "string" },
+          "name": { "type": "string" },
+          "parentId": { "type": ["string", "null"] },
+          "createdAt": { "type": "integer" }
+        }
+      },
+      "BucketSummary": {
+        "type": "object",
+        "description": "No endpoint and no credentials — safe to return to an API key.",
+        "properties": {
+          "id": { "type": "string" },
+          "name": { "type": "string" },
+          "kind": { "type": "string", "enum": ["binding", "s3"] },
+          "usedBytes": { "type": "integer" },
+          "quotaBytes": { "type": ["integer", "null"] },
+          "priority": { "type": "integer" }
+        }
+      },
+      "Bucket": {
+        "allOf": [
+          { "$ref": "#/components/schemas/BucketSummary" },
+          {
+            "type": "object",
+            "properties": {
+              "binding": { "type": ["string", "null"] },
+              "endpoint": { "type": ["string", "null"] }
+            }
+          }
+        ]
+      },
+      "Storage": {
+        "type": "object",
+        "properties": {
+          "buckets": { "type": "array", "items": { "$ref": "#/components/schemas/Bucket" } },
+          "totalUsedBytes": { "type": "integer" },
+          "totalQuotaBytes": { "type": ["integer", "null"], "description": "Null when no account has a quota." },
+          "routing": {
+            "type": "object",
+            "properties": {
+              "mode": { "$ref": "#/components/schemas/RoutingMode" },
+              "priorityBucketIds": { "type": "array", "items": { "type": "string" } }
+            }
+          }
+        }
+      },
+      "RoutingMode": {
+        "type": "string",
+        "enum": ["most_available", "round_robin", "priority"],
+        "description": "`most_available` fills the account with the most room; `round_robin` rotates; `priority` follows `priorityBucketIds`."
+      },
+      "StorageAccountInput": {
+        "type": "object",
+        "required": ["name", "endpoint", "bucketName", "accessKeyId", "secretAccessKey"],
+        "properties": {
+          "name": { "type": "string", "maxLength": 80 },
+          "endpoint": { "type": "string", "format": "uri", "maxLength": 300, "description": "S3 endpoint, e.g. `https://<account-id>.r2.cloudflarestorage.com`." },
+          "region": { "type": "string", "maxLength": 64, "default": "auto" },
+          "bucketName": { "type": "string", "maxLength": 191 },
+          "accessKeyId": { "type": "string", "maxLength": 200 },
+          "secretAccessKey": { "type": "string", "maxLength": 400 },
+          "quotaBytes": { "type": ["integer", "null"], "minimum": 0 }
+        }
+      },
+      "Share": {
+        "type": "object",
+        "properties": {
+          "id": { "type": "string" },
+          "url": { "type": "string", "format": "uri" },
+          "createdAt": { "type": "integer" },
+          "file": { "$ref": "#/components/schemas/File" }
+        }
+      },
+      "PublicFile": {
+        "type": "object",
+        "properties": {
+          "name": { "type": "string" },
+          "mimeType": { "type": "string" },
+          "sizeBytes": { "type": "integer" },
+          "createdAt": { "type": "integer" }
+        }
+      },
+      "ApiKey": {
+        "type": "object",
+        "properties": {
+          "id": { "type": "string" },
+          "name": { "type": "string" },
+          "keyPrefix": { "type": "string", "description": "First characters of the key, for telling keys apart." },
+          "scopes": { "type": "array", "items": { "$ref": "#/components/schemas/ApiKeyScope" } },
+          "lastUsedAt": { "type": ["integer", "null"], "description": "Written at most every 5 minutes." },
+          "revokedAt": { "type": ["integer", "null"] },
+          "createdAt": { "type": "integer" }
+        }
+      },
+      "ApiKeyScope": {
+        "type": "string",
+        "enum": ["files:read", "files:write", "files:delete", "storage:manage"],
+        "description": "`files:read` lists and downloads, and reads folders and buckets. `files:write` uploads, renames, moves, restores, shares and manages folders. `files:delete` trashes and deletes permanently. `storage:manage` adds and removes storage accounts."
+      }
+    }
+  }
+}

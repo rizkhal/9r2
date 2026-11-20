@@ -102,15 +102,14 @@ export const files = sqliteTable(
     name: text('name').notNull(),
     mimeType: text('mime_type').notNull(),
     sizeBytes: integer('size_bytes').notNull(),
+    /** SHA-256 of the content, filled on upload. Null for rows stored before hashing existed. */
+    sha256: text('sha256'),
     starredAt: integer('starred_at'),
     deletedAt: integer('deleted_at'),
     createdAt: integer('created_at').notNull(),
     updatedAt: integer('updated_at').notNull(),
   },
-  (t) => [
-    index('files_user_folder_idx').on(t.userId, t.folderId),
-    index('files_user_deleted_idx').on(t.userId, t.deletedAt),
-  ],
+  (t) => [index('files_user_folder_idx').on(t.userId, t.folderId), index('files_user_deleted_idx').on(t.userId, t.deletedAt)],
 )
 
 export const shares = sqliteTable(
