@@ -11,7 +11,15 @@ import { TrashPage } from './pages/TrashPage'
 
 function RequireAuth() {
   const { user, loading } = useSession()
-  if (loading) return <p className="p-8 text-sm text-slate-500">Loading…</p>
+
+  if (loading) {
+    return (
+      <div className="grid min-h-dvh place-items-center">
+        <span className="animate-pulse font-mono text-[13px] tracking-[0.3em] text-faint">9R2</span>
+      </div>
+    )
+  }
+
   return user ? <Outlet /> : <Navigate to="/login" replace />
 }
 

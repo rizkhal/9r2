@@ -208,6 +208,10 @@ expect "folders list both" 2 "$(abody GET /api/folders | jq '.folders | length')
 expect "a bogus parent is 404" 404 "$(acode POST /api/folders "$(json --arg p nope '{name:"x",parentId:$p}')")"
 expect "renaming a folder is 200" 200 "$(acode PATCH "/api/folders/$CHILD_ID" "$(json --arg n 2026-Q1 '{name:$n}')")"
 expect "a folder cannot be its own parent" 400 "$(acode PATCH "/api/folders/$CHILD_ID" "$(json --arg p "$CHILD_ID" '{parentId:$p}')")"
+expect "parentId filters to one level" 1 "$(abody GET "/api/folders?parentId=$FOLDER_ID" | jq '.folders | length')"
+expect "parentId= lists the root" 1 "$(abody GET '/api/folders?parentId=' | jq '.folders | length')"
+expect "a folder is fetchable with its children" 1 "$(abody GET "/api/folders/$FOLDER_ID" | jq '.folders | length')"
+expect "a bogus folder id is 404" 404 "$(acode GET /api/folders/nope)"
 
 # --------------------------------------------------------------------- files
 
@@ -234,6 +238,7 @@ expect "starring a file is 200" "true" \
 expect "moving into a folder is 200" "$FOLDER_ID" \
   "$(abody PATCH "/api/files/$FILE_ID" "$(json --arg f "$FOLDER_ID" '{folderId:$f}')" | jq -r .file.folderId)"
 expect "listing that folder returns it" 1 "$(abody GET "/api/files?folderId=$FOLDER_ID" | jq '.files | length')"
+expect "folder contents include the file" 1 "$(abody GET "/api/folders/$FOLDER_ID" | jq '.files | length')"
 expect "moving to a bogus folder is 404" 404 "$(acode PATCH "/api/files/$FILE_ID" "$(json '{folderId:"nope"}')")"
 
 expect "downloading returns the bytes" "hello from e2e" "$(abody GET "/api/files/$FILE_ID/content")"
@@ -301,6 +306,7 @@ section "API keys"
 expect "key management requires a session" 401 "$(code GET /api/api-keys)"
 READ_KEY="$(abody POST /api/api-keys "$(json '{name:"reader",scopes:["files:read"]}')" | jq -r .secret)"
 FULL_KEY="$(abody POST /api/api-keys "$(json '{name:"full",scopes:["files:read","files:write","files:delete"]}')" | jq -r .secret)"
+STORAGE_KEY="$(abody POST /api/api-keys "$(json '{name:"storage",scopes:["files:read","storage:manage"]}')" | jq -r .secret)"
 FULL_ID="$(abody GET /api/api-keys | jq -r '.apiKeys[] | select(.name=="full") | .id')"
 expect_contains "the secret is prefixed" "9r2_" "$READ_KEY"
 expect "the secret is never listed again" "null" "$(abody GET /api/api-keys | jq -r '.apiKeys[0].secret // "null"')"
@@ -316,9 +322,27 @@ expect "a write key can move storage" 200 \
   "$(kcode "$FULL_KEY" POST "/api/files/$FILE_ID/move-storage" "$(json --arg b "$B_ID" '{bucketId:$b}')")"
 expect "a write key can move it back" 200 \
   "$(kcode "$FULL_KEY" POST "/api/files/$FILE_ID/move-storage" "$(json --arg b "$PRIMARY_ID" '{bucketId:$b}')")"
+expect "a key can list buckets" 200 "$(kcode "$READ_KEY" GET /api/buckets)"
+expect "the bucket list carries the ids move-storage needs" "$PRIMARY_ID" \
+  "$(curl -s -H "Authorization: Bearer $READ_KEY" "$BASE/api/buckets" | jq -r '.buckets[0].id')"
+expect "the bucket list hides the endpoint" "null" \
+  "$(curl -s -H "Authorization: Bearer $READ_KEY" "$BASE/api/buckets" | jq -r '.buckets[0].endpoint // "null"')"
 expect "a key cannot touch storage accounts" 401 "$(kcode "$FULL_KEY" GET /api/storage)"
 expect "a key cannot manage keys" 401 "$(kcode "$FULL_KEY" GET /api/api-keys)"
-expect "a key cannot touch folders" 401 "$(kcode "$FULL_KEY" GET /api/folders)"
+expect "a key can list folders" 200 "$(kcode "$FULL_KEY" GET /api/folders)"
+expect "a read key cannot create folders" 403 "$(kcode "$READ_KEY" POST /api/folders "$(json '{name:"nope"}')")"
+expect "a write key can create folders" 201 "$(kcode "$FULL_KEY" POST /api/folders "$(json '{name:"from-key"}')")"
+expect "a key can read one bucket" 200 "$(kcode "$READ_KEY" GET "/api/buckets/$PRIMARY_ID")"
+expect "a bogus bucket id is 404" 404 "$(kcode "$READ_KEY" GET /api/buckets/nope)"
+expect "a key without storage:manage cannot add a bucket" 403 \
+  "$(kcode "$FULL_KEY" POST /api/buckets "$(account_json "S3 C" "$S3_A" bucket-c)")"
+C_ID="$(curl -s -H "Authorization: Bearer $STORAGE_KEY" -H 'content-type: application/json' \
+  -X POST "$BASE/api/buckets" -d "$(account_json "S3 C" "$S3_A" bucket-c)" | jq -r .id)"
+expect "a storage key can add a bucket" "true" "$([ -n "$C_ID" ] && [ "$C_ID" != "null" ] && echo true || echo false)"
+expect "the added bucket is readable" 200 "$(kcode "$STORAGE_KEY" GET "/api/buckets/$C_ID")"
+expect "a binding bucket cannot be deleted over the API" 400 "$(kcode "$STORAGE_KEY" DELETE "/api/buckets/$PRIMARY_ID")"
+expect "an empty account can be deleted over the API" 200 "$(kcode "$STORAGE_KEY" DELETE "/api/buckets/$C_ID")"
+expect "deleting it twice is 404" 404 "$(kcode "$STORAGE_KEY" DELETE "/api/buckets/$C_ID")"
 expect "a garbage key is 401" 401 "$(kcode 9r2_nope GET /api/files)"
 expect "last_used_at is recorded" "true" \
   "$(abody GET /api/api-keys | jq -r '(.apiKeys[] | select(.name=="reader") | .lastUsedAt != null)')"

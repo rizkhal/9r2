@@ -58,6 +58,11 @@ async function sameValue(a: string, b: string) {
 }
 
 authRoutes.post('/login', async (c) => {
+  const ip = c.req.header('CF-Connecting-IP') ?? 'unknown'
+  if (!(await c.env.LOGIN_RATE_LIMITER.limit({ key: ip })).success) {
+    throw new HTTPException(429, { message: 'Too many login attempts. Try again in a minute.' })
+  }
+
   const body = await readJson(c, loginSchema)
   const admin = adminCredentials(c.env)
 

@@ -4,3 +4,14 @@ dist/
 .dev.vars
 *.log
 .DS_Store
+apps/cf-bootstrap/.local/
+cf-access-keys.json
+
+# cf-dashboard automation secrets
+cf-dashboard-tokens.json
+
+cf-dashboard-run.log
+
+apps/api/.9r2-key
+
+accounts.json

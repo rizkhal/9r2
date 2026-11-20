@@ -1,28 +1,60 @@
-import { and, eq, isNull } from 'drizzle-orm'
+import { and, desc, eq, isNull } from 'drizzle-orm'
 import { Hono } from 'hono'
 import { HTTPException } from 'hono/http-exception'
 import { folderCreateSchema, folderPatchSchema, type FolderDTO } from '@9r2/shared'
 import { getDb } from '../db'
-import { files, folders } from '../db/schema'
+import { buckets, files, folders } from '../db/schema'
 import type { AppEnv } from '../env'
 import { readJson } from '../lib/http'
-import { requireAuth } from '../middleware/auth'
+import { requireScope } from '../middleware/auth'
+import { fileSelection, toFileDTO } from './files'
 
 export const folderRoutes = new Hono<AppEnv>()
 
-folderRoutes.use('*', requireAuth)
+const folderColumns = { id: folders.id, name: folders.name, parentId: folders.parentId, createdAt: folders.createdAt }
 
-folderRoutes.get('/', async (c) => {
-  const rows = await getDb(c.env.DB)
-    .select({ id: folders.id, name: folders.name, parentId: folders.parentId, createdAt: folders.createdAt })
-    .from(folders)
-    .where(and(eq(folders.userId, c.get('user').id), isNull(folders.deletedAt)))
+folderRoutes.get('/', requireScope('files:read'), async (c) => {
+  // `?parentId=<id>` lists one level, `?parentId=` lists the root, no param lists every folder.
+  const parentId = c.req.query('parentId')
+  const filters = [eq(folders.userId, c.get('user').id), isNull(folders.deletedAt)]
+  if (parentId !== undefined) filters.push(parentId === '' ? isNull(folders.parentId) : eq(folders.parentId, parentId))
+
+  const rows = await getDb(c.env.DB).select(folderColumns).from(folders).where(and(...filters))
 
   const result: FolderDTO[] = rows
   return c.json({ folders: result })
 })
 
-folderRoutes.post('/', async (c) => {
+/** One folder with its child folders and files, so a script needs a single call. */
+folderRoutes.get('/:id', requireScope('files:read'), async (c) => {
+  const db = getDb(c.env.DB)
+  const userId = c.get('user').id
+  const id = c.req.param('id')
+
+  const rows = await db
+    .select(folderColumns)
+    .from(folders)
+    .where(and(eq(folders.id, id), eq(folders.userId, userId), isNull(folders.deletedAt)))
+    .limit(1)
+  const folder = rows[0]
+  if (!folder) throw new HTTPException(404, { message: 'Folder not found.' })
+
+  const children = await db
+    .select(folderColumns)
+    .from(folders)
+    .where(and(eq(folders.userId, userId), eq(folders.parentId, id), isNull(folders.deletedAt)))
+
+  const fileRows = await db
+    .select(fileSelection)
+    .from(files)
+    .innerJoin(buckets, eq(buckets.id, files.bucketId))
+    .where(and(eq(files.userId, userId), eq(files.folderId, id), isNull(files.deletedAt)))
+    .orderBy(desc(files.createdAt))
+
+  return c.json({ folder, folders: children, files: fileRows.map(toFileDTO) })
+})
+
+folderRoutes.post('/', requireScope('files:write'), async (c) => {
   const body = await readJson(c, folderCreateSchema)
   const db = getDb(c.env.DB)
   const userId = c.get('user').id
@@ -46,7 +78,7 @@ folderRoutes.post('/', async (c) => {
   return c.json({ folder }, 201)
 })
 
-folderRoutes.patch('/:id', async (c) => {
+folderRoutes.patch('/:id', requireScope('files:write'), async (c) => {
   const body = await readJson(c, folderPatchSchema)
   const db = getDb(c.env.DB)
   const userId = c.get('user').id
@@ -79,7 +111,7 @@ folderRoutes.patch('/:id', async (c) => {
   return c.json({ status: 'ok' })
 })
 
-folderRoutes.delete('/:id', async (c) => {
+folderRoutes.delete('/:id', requireScope('files:write'), async (c) => {
   const db = getDb(c.env.DB)
   const userId = c.get('user').id
   const id = c.req.param('id')

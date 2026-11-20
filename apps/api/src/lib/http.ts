@@ -20,6 +20,7 @@ export const errorCodes: Record<number, string> = {
   411: 'LENGTH_REQUIRED',
   413: 'PAYLOAD_TOO_LARGE',
   416: 'RANGE_NOT_SATISFIABLE',
+  429: 'RATE_LIMITED',
   500: 'INTERNAL_ERROR',
   502: 'STORAGE_ERROR',
   503: 'STORAGE_UNAVAILABLE',

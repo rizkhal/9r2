@@ -1,6 +1,18 @@
-import type { FileDTO, FolderDTO, StorageDTO } from '@9r2/shared'
+import type { BucketSummaryDTO, FileDTO, FolderDTO } from '@9r2/shared'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { FileTable, btn, input } from '../components/FileTable'
+import { FileTable } from '../components/FileTable'
+import {
+  Alert,
+  Bar,
+  Button,
+  EmptyState,
+  Icon,
+  Input,
+  Menu,
+  Panel,
+  cx,
+  type MenuEntry,
+} from '../components/ui'
 import { api, copyText, uploadFile } from '../lib/api'
 
 type UploadTask = { id: string; name: string; progress: number; error: string | null }
@@ -8,14 +20,17 @@ type UploadTask = { id: string; name: string; progress: number; error: string | 
 export function FilesPage() {
   const [folders, setFolders] = useState<FolderDTO[]>([])
   const [files, setFiles] = useState<FileDTO[]>([])
-  const [buckets, setBuckets] = useState<StorageDTO['buckets']>([])
+  const [buckets, setBuckets] = useState<BucketSummaryDTO[]>([])
   const [currentFolderId, setCurrentFolderId] = useState<string | null>(null)
   const [searchInput, setSearchInput] = useState('')
   const [query, setQuery] = useState('')
   const [uploads, setUploads] = useState<UploadTask[]>([])
   const [error, setError] = useState<string | null>(null)
   const [notice, setNotice] = useState<string | null>(null)
+  const [dragging, setDragging] = useState(false)
   const fileInput = useRef<HTMLInputElement>(null)
+  const searchRef = useRef<HTMLInputElement>(null)
+  const dragDepth = useRef(0)
 
   const loadFolders = useCallback(async () => {
     const data = await api<{ folders: FolderDTO[] }>('/api/folders')
@@ -36,8 +51,20 @@ export function FilesPage() {
   }, [searchInput])
 
   useEffect(() => {
+    function onKey(event: KeyboardEvent) {
+      if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'k') {
+        event.preventDefault()
+        searchRef.current?.focus()
+        searchRef.current?.select()
+      }
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [])
+
+  useEffect(() => {
     loadFolders().catch((err: unknown) => setError(err instanceof Error ? err.message : 'Could not load folders'))
-    api<StorageDTO>('/api/storage')
+    api<{ buckets: BucketSummaryDTO[] }>('/api/buckets')
       .then((data) => setBuckets(data.buckets))
       .catch(() => undefined)
   }, [loadFolders])
@@ -117,9 +144,9 @@ export function FilesPage() {
       const { url } = await api<{ url: string }>(`/api/files/${file.id}/share`, { method: 'POST' })
       try {
         await copyText(url)
-        setNotice(`Share link copied: ${url}`)
+        setNotice(`Share link copied — ${url}`)
       } catch {
-        setNotice(`Share link: ${url}`)
+        setNotice(`Share link — ${url}`)
       }
     })
   }
@@ -164,34 +191,129 @@ export function FilesPage() {
     })
   }
 
-  const partial = uploads.filter((task) => task.error !== null)
+  function download(file: FileDTO) {
+    window.location.href = `/api/files/${file.id}/content?download=1`
+  }
+
+  function menuItems(file: FileDTO): MenuEntry[] {
+    const entries: MenuEntry[] = [
+      {
+        label: 'Open in new tab',
+        icon: 'external',
+        onSelect: () => window.open(`/api/files/${file.id}/content`, '_blank', 'noopener'),
+      },
+      { label: 'Download', icon: 'download', onSelect: () => download(file) },
+      { label: 'Copy share link', icon: 'link', onSelect: () => void share(file) },
+      'separator',
+      { label: 'Rename', icon: 'pencil', onSelect: () => void rename(file) },
+      {
+        label: 'Move to folder',
+        icon: 'folder',
+        children: [
+          { label: 'All files (root)', onSelect: () => void move(file, null) },
+          ...folders
+            .filter((folder) => folder.id !== file.folderId)
+            .map((folder) => ({ label: folder.name, onSelect: () => void move(file, folder.id) })),
+        ],
+      },
+    ]
+
+    if (buckets.length > 1) {
+      entries.push({
+        label: 'Move to storage',
+        icon: 'database',
+        children: buckets
+          .filter((bucket) => bucket.id !== file.bucketId)
+          .map((bucket) => ({ label: bucket.name, onSelect: () => void moveStorage(file, bucket.id) })),
+      })
+    }
+
+    entries.push('separator', {
+      label: 'Move to trash',
+      icon: 'trash',
+      danger: true,
+      onSelect: () => void trash(file),
+    })
+    return entries
+  }
+
+  const failed = uploads.filter((task) => task.error !== null)
+  const placeName = query ? 'Search results' : breadcrumb[breadcrumb.length - 1]?.name ?? 'All files'
 
   return (
-    <div className="space-y-5">
-      <div className="flex flex-wrap items-center justify-between gap-3">
-        <div>
-          <h1 className="text-2xl font-semibold tracking-tight">All files</h1>
-          <p className="text-sm text-slate-500">
-            {query ? `Search results for “${query}”` : breadcrumb.length === 0 ? 'Root folder' : breadcrumb.map((folder) => folder.name).join(' / ')}
+    <div
+      className="relative space-y-7"
+      onDragEnter={(event) => {
+        if (!event.dataTransfer.types.includes('Files')) return
+        dragDepth.current += 1
+        setDragging(true)
+      }}
+      onDragOver={(event) => {
+        if (event.dataTransfer.types.includes('Files')) event.preventDefault()
+      }}
+      onDragLeave={() => {
+        dragDepth.current = Math.max(0, dragDepth.current - 1)
+        if (dragDepth.current === 0) setDragging(false)
+      }}
+      onDrop={(event) => {
+        event.preventDefault()
+        dragDepth.current = 0
+        setDragging(false)
+        void upload(event.dataTransfer.files)
+      }}
+    >
+      {dragging ? (
+        <div className="pointer-events-none absolute inset-0 z-30 grid place-items-center rounded-panel border border-dashed border-accent bg-canvas/85 backdrop-blur-[2px]">
+          <div className="text-center">
+            <Icon name="upload" className="mx-auto size-6 text-accent" />
+            <p className="mt-2.5 text-[13px] font-medium text-ink">
+              Drop to upload to {placeName.toLowerCase()}
+            </p>
+            <p className="mt-0.5 font-mono text-[10.5px] uppercase tracking-[0.14em] text-faint">
+              multiple files supported
+            </p>
+          </div>
+        </div>
+      ) : null}
+
+      <header className="flex flex-wrap items-end justify-between gap-4">
+        <div className="min-w-0">
+          <h1 className="truncate text-[26px] font-semibold leading-tight tracking-[-0.025em] text-ink">
+            {placeName}
+          </h1>
+          <p className="mt-1 font-mono text-[11px] tabular-nums text-faint">
+            {files.length} {files.length === 1 ? 'file' : 'files'}
+            {!query && childFolders.length > 0 ? ` · ${childFolders.length} folders` : ''}
+            {query ? ` · matching “${query}”` : ''}
           </p>
         </div>
+
         <div className="flex flex-wrap items-center gap-2">
-          <input
-            className={`${input} w-56`}
-            placeholder="Search files…"
-            value={searchInput}
-            onChange={(event) => setSearchInput(event.target.value)}
-          />
-          <button type="button" className={btn} onClick={() => void createFolder()}>
+          <div className="relative">
+            <Icon
+              name="search"
+              className="pointer-events-none absolute left-2.5 top-1/2 size-3.5 -translate-y-1/2 text-faint"
+            />
+            <Input
+              ref={searchRef}
+              value={searchInput}
+              onChange={(event) => setSearchInput(event.target.value)}
+              placeholder="Search files"
+              aria-label="Search files"
+              className="w-56 pl-8 pr-12 sm:w-64"
+            />
+            <kbd className="pointer-events-none absolute right-2 top-1/2 -translate-y-1/2 rounded border border-line px-1 font-mono text-[9.5px] text-faint">
+              ⌘K
+            </kbd>
+          </div>
+          <Button type="button" onClick={() => void createFolder()}>
+            <Icon name="plus" className="size-3.5" />
             New folder
-          </button>
-          <button
-            type="button"
-            className="rounded-md bg-indigo-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-indigo-500"
-            onClick={() => fileInput.current?.click()}
-          >
+          </Button>
+          <Button type="button" variant="primary" onClick={() => fileInput.current?.click()}>
+            <Icon name="upload" className="size-3.5" />
             Upload
-          </button>
+          </Button>
           <input
             ref={fileInput}
             type="file"
@@ -203,20 +325,31 @@ export function FilesPage() {
             }}
           />
         </div>
-      </div>
+      </header>
 
-      {error ? <p className="rounded-md bg-red-50 px-3 py-2 text-sm text-red-700 dark:bg-red-950 dark:text-red-300">{error}</p> : null}
-      {notice ? <p className="rounded-md bg-emerald-50 px-3 py-2 text-sm text-emerald-700 dark:bg-emerald-950 dark:text-emerald-300">{notice}</p> : null}
+      {error ? <Alert>{error}</Alert> : null}
+      {notice ? <Alert tone="notice">{notice}</Alert> : null}
 
-      {breadcrumb.length > 0 ? (
-        <nav className="flex flex-wrap items-center gap-1 text-sm text-slate-500">
-          <button type="button" className="hover:text-indigo-600" onClick={() => setCurrentFolderId(null)}>
-            All files
+      {breadcrumb.length > 0 && !query ? (
+        <nav aria-label="Breadcrumb" className="flex flex-wrap items-center gap-1.5 font-mono text-[11px] text-faint">
+          <button
+            type="button"
+            onClick={() => setCurrentFolderId(null)}
+            className="rounded-[4px] px-1 py-0.5 transition-colors hover:bg-raise hover:text-ink"
+          >
+            all files
           </button>
-          {breadcrumb.map((folder) => (
-            <span key={folder.id} className="flex items-center gap-1">
-              <span>/</span>
-              <button type="button" className="hover:text-indigo-600" onClick={() => setCurrentFolderId(folder.id)}>
+          {breadcrumb.map((folder, index) => (
+            <span key={folder.id} className="flex items-center gap-1.5">
+              <span className="text-line2">/</span>
+              <button
+                type="button"
+                onClick={() => setCurrentFolderId(folder.id)}
+                className={cx(
+                  'rounded-[4px] px-1 py-0.5 transition-colors hover:bg-raise hover:text-ink',
+                  index === breadcrumb.length - 1 && 'text-ink',
+                )}
+              >
                 {folder.name}
               </button>
             </span>
@@ -224,110 +357,121 @@ export function FilesPage() {
         </nav>
       ) : null}
 
-      {childFolders.length > 0 ? (
-        <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-4">
+      {childFolders.length > 0 && !query ? (
+        <div className="grid grid-cols-2 gap-2.5 sm:grid-cols-3 xl:grid-cols-4">
           {childFolders.map((folder) => (
-            <div key={folder.id} className="group flex items-center justify-between gap-2 rounded-lg border border-slate-200 px-3 py-2 dark:border-slate-800">
+            <div
+              key={folder.id}
+              className="group flex items-center gap-2.5 rounded-panel border border-line bg-surface px-3 py-2.5 transition-colors hover:border-line2 hover:bg-raise"
+            >
+              <Icon name="folder" className="size-4 text-muted" />
               <button
                 type="button"
-                className="min-w-0 flex-1 truncate text-left text-sm font-medium hover:text-indigo-600"
                 onClick={() => setCurrentFolderId(folder.id)}
                 title={folder.name}
+                className="min-w-0 flex-1 truncate text-left text-[13px] font-medium text-ink transition-colors hover:text-accent"
               >
-                📁 {folder.name}
+                {folder.name}
               </button>
               <button
                 type="button"
-                className="text-xs text-slate-400 opacity-0 transition group-hover:opacity-100 hover:text-red-600"
                 onClick={() => void deleteFolder(folder)}
                 title="Delete folder"
+                className="rounded-[4px] p-1 text-faint opacity-0 transition hover:bg-danger-soft hover:text-danger focus-visible:opacity-100 group-hover:opacity-100"
               >
-                ✕
+                <Icon name="close" className="size-3" />
               </button>
             </div>
           ))}
         </div>
       ) : null}
 
+      <Panel className="overflow-hidden">
+        <FileTable
+          files={files}
+          onToggleStar={(file) => void toggleStar(file)}
+          empty={
+            query ? (
+              <EmptyState
+                icon="search"
+                title={`Nothing matches “${query}”`}
+                body="Try a shorter search, or clear it to see everything in this folder."
+                action={
+                  <Button type="button" onClick={() => setSearchInput('')}>
+                    Clear search
+                  </Button>
+                }
+              />
+            ) : (
+              <EmptyState
+                icon="upload"
+                title="This folder is empty"
+                body="Drop files anywhere on this page, or pick them from your computer."
+                action={
+                  <Button type="button" variant="primary" onClick={() => fileInput.current?.click()}>
+                    <Icon name="upload" className="size-3.5" />
+                    Choose files
+                  </Button>
+                }
+              />
+            )
+          }
+          actions={(file) => (
+            <>
+              <Button
+                type="button"
+                variant="ghost"
+                size="icon"
+                className="size-7 text-faint hover:text-ink"
+                title="Download"
+                aria-label={`Download ${file.name}`}
+                onClick={() => download(file)}
+              >
+                <Icon name="download" className="size-3.5" />
+              </Button>
+              <Menu items={menuItems(file)} label={`Actions for ${file.name}`} />
+            </>
+          )}
+        />
+      </Panel>
+
       {uploads.length > 0 ? (
-        <div className="space-y-1.5 rounded-lg border border-slate-200 p-3 dark:border-slate-800">
-          {uploads.map((task) => (
-            <div key={task.id} className="text-xs">
-              <div className="flex items-center justify-between gap-2">
-                <span className="truncate">{task.name}</span>
-                <span className={task.error ? 'text-red-600' : 'text-slate-500'}>
-                  {task.error ?? `${Math.round(task.progress * 100)}%`}
-                </span>
-              </div>
-              <div className="mt-1 h-1 overflow-hidden rounded bg-slate-200 dark:bg-slate-800">
-                <div
-                  className={`h-full ${task.error ? 'bg-red-500' : 'bg-indigo-500'}`}
-                  style={{ width: `${Math.round(task.progress * 100)}%` }}
-                />
-              </div>
-            </div>
-          ))}
-          {partial.length > 0 ? (
-            <button type="button" className={btn} onClick={() => setUploads([])}>
-              Clear failed uploads
+        <div className="pop fixed bottom-4 right-4 z-40 w-[min(360px,calc(100vw-2rem))] rounded-panel border border-line bg-surface p-3 shadow-[0_24px_60px_-24px_rgba(30,20,12,0.5)]">
+          <div className="mb-2 flex items-center justify-between">
+            <p className="font-mono text-[10px] uppercase tracking-[0.14em] text-faint">
+              Uploading {uploads.length - failed.length} of {uploads.length}
+            </p>
+            <button
+              type="button"
+              onClick={() => setUploads([])}
+              className="rounded-[4px] p-1 text-faint transition-colors hover:bg-raise hover:text-ink"
+              title="Dismiss"
+            >
+              <Icon name="close" className="size-3" />
             </button>
-          ) : null}
+          </div>
+          <div className="space-y-2">
+            {uploads.map((task) => (
+              <div key={task.id}>
+                <div className="flex items-baseline justify-between gap-2">
+                  <span className="truncate text-[11.5px] text-ink" title={task.name}>
+                    {task.name}
+                  </span>
+                  <span
+                    className={cx(
+                      'shrink-0 font-mono text-[10px] tabular-nums',
+                      task.error ? 'text-danger' : 'text-faint',
+                    )}
+                  >
+                    {task.error ?? `${Math.round(task.progress * 100)}%`}
+                  </span>
+                </div>
+                <Bar value={task.progress} className="mt-1" />
+              </div>
+            ))}
+          </div>
         </div>
       ) : null}
-
-      <FileTable
-        files={files}
-        empty={query ? 'No files match your search.' : 'No files yet. Upload something to get started.'}
-        actions={(file) => (
-          <>
-            <a className={btn} href={`/api/files/${file.id}/content`} target="_blank" rel="noreferrer">
-              Open
-            </a>
-            <a className={btn} href={`/api/files/${file.id}/content?download=1`}>
-              Download
-            </a>
-            <button type="button" className={btn} onClick={() => void share(file)}>
-              Share
-            </button>
-            <button type="button" className={btn} onClick={() => void rename(file)}>
-              Rename
-            </button>
-            <select
-              className="rounded-md border border-slate-200 bg-transparent px-1.5 py-1 text-xs dark:border-slate-700"
-              value={file.folderId ?? ''}
-              onChange={(event) => void move(file, event.target.value || null)}
-              title="Move to folder"
-            >
-              <option value="">Root</option>
-              {folders.map((folder) => (
-                <option key={folder.id} value={folder.id}>
-                  {folder.name}
-                </option>
-              ))}
-            </select>
-            {buckets.length > 1 ? (
-              <select
-                className="rounded-md border border-slate-200 bg-transparent px-1.5 py-1 text-xs dark:border-slate-700"
-                value={file.bucketId}
-                onChange={(event) => void moveStorage(file, event.target.value)}
-                title="Move to storage account"
-              >
-                {buckets.map((bucket) => (
-                  <option key={bucket.id} value={bucket.id}>
-                    {bucket.name}
-                  </option>
-                ))}
-              </select>
-            ) : null}
-            <button type="button" className={btn} onClick={() => void toggleStar(file)} title="Star">
-              {file.starred ? 'Unstar' : 'Star'}
-            </button>
-            <button type="button" className={btn} onClick={() => void trash(file)}>
-              Trash
-            </button>
-          </>
-        )}
-      />
     </div>
   )
 }

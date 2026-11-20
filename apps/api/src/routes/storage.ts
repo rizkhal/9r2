@@ -1,6 +1,5 @@
 import { and, eq } from 'drizzle-orm'
 import { Hono } from 'hono'
-import { HTTPException } from 'hono/http-exception'
 import {
   bucketPatchSchema,
   policySchema,
@@ -9,11 +8,11 @@ import {
   type StorageDTO,
 } from '@9r2/shared'
 import { getDb } from '../db'
-import { buckets, files, users } from '../db/schema'
-import { readBucketConfig, sessionSecret, type AppEnv } from '../env'
-import { encryptText } from '../lib/crypto'
+import { buckets, users } from '../db/schema'
+import { readBucketConfig, type AppEnv } from '../env'
 import { readJson } from '../lib/http'
 import { loadBuckets, parseIds, seedBuckets } from '../lib/routing'
+import { createStorageAccount, removeStorageAccount } from '../lib/storage-accounts'
 import { checkS3Connection } from '../lib/storage-provider'
 import { requireAuth } from '../middleware/auth'
 
@@ -67,63 +66,12 @@ storageRoutes.post('/accounts/test', async (c) => {
 /** Adds an S3-compatible storage account, e.g. another Cloudflare account's R2. */
 storageRoutes.post('/accounts', async (c) => {
   const body = await readJson(c, storageAccountSchema)
-  const db = getDb(c.env.DB)
-  const userId = c.get('user').id
-
-  const check = await checkS3Connection(c.env, body)
-  if (!check.ok) throw new HTTPException(400, { message: check.message })
-
-  const existing = await db
-    .select({ id: buckets.id })
-    .from(buckets)
-    .where(and(eq(buckets.userId, userId), eq(buckets.endpoint, body.endpoint), eq(buckets.bucketName, body.bucketName)))
-    .limit(1)
-  if (existing[0]) throw new HTTPException(409, { message: 'That bucket is already connected.' })
-
-  const secret = sessionSecret(c.env)
-  const current = await loadBuckets(db, userId)
-  const id = crypto.randomUUID()
-
-  await db.insert(buckets).values({
-    id,
-    userId,
-    kind: 's3',
-    binding: `s3:${id}`,
-    name: body.name,
-    bucketName: body.bucketName,
-    endpoint: body.endpoint.replace(/\/+$/, ''),
-    region: body.region,
-    accessKeyIdEncrypted: await encryptText(secret, body.accessKeyId),
-    secretAccessKeyEncrypted: await encryptText(secret, body.secretAccessKey),
-    quotaBytes: body.quotaBytes ?? null,
-    priority: current.length,
-    createdAt: Date.now(),
-  })
-
+  const id = await createStorageAccount(c.env, getDb(c.env.DB), c.get('user').id, body)
   return c.json({ id }, 201)
 })
 
 storageRoutes.delete('/accounts/:id', async (c) => {
-  const db = getDb(c.env.DB)
-  const userId = c.get('user').id
-  const id = c.req.param('id')
-
-  const rows = await db
-    .select()
-    .from(buckets)
-    .where(and(eq(buckets.id, id), eq(buckets.userId, userId)))
-    .limit(1)
-  const bucket = rows[0]
-  if (!bucket) throw new HTTPException(404, { message: 'Storage account not found.' })
-  if (bucket.kind !== 's3') {
-    throw new HTTPException(400, { message: 'Buckets configured in wrangler.jsonc cannot be removed here.' })
-  }
-
-  // Removing the row would orphan its objects, so require an empty bucket.
-  const [used] = await db.select({ id: files.id }).from(files).where(and(eq(files.bucketId, id), eq(files.userId, userId))).limit(1)
-  if (used) throw new HTTPException(409, { message: 'Move or delete this account\'s files before removing it.' })
-
-  await db.delete(buckets).where(and(eq(buckets.id, id), eq(buckets.userId, userId)))
+  await removeStorageAccount(getDb(c.env.DB), c.get('user').id, c.req.param('id'))
   return c.json({ status: 'ok' })
 })
 

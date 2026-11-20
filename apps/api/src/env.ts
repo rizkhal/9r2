@@ -2,6 +2,7 @@ import { HTTPException } from 'hono/http-exception'
 
 export type Bindings = {
   DB: D1Database
+  LOGIN_RATE_LIMITER: RateLimit
   SESSION_SECRET: string
   /** Single-account login: no registration. Set both as wrangler secrets. */
   ADMIN_EMAIL: string
