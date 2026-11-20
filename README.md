@@ -167,6 +167,10 @@ until permanently deleted, because the object still exists.
   nothing is buffered and the Worker never writes to disk.
 - The declared `Content-Length` is checked against the size the provider reports, so
   quota cannot be dodged by lying about the size.
+- Content is hashed (SHA-256) as it streams past and the digest is stored on the
+  file row, so identical content can be found with a query. Uploading the same bytes
+  twice still stores two files — the hash is for identification, not dedupe.
+- Rows stored before hashing existed have `sha256: null`.
 - Objects are stored flat under `<userId>/<fileId>`. Folders exist only in D1.
 - Reads always stream through the Worker with Range support (video seeking, resumed
   downloads). No presigned URLs, no public bucket.
@@ -187,7 +191,7 @@ All routes under `/api` and `/public` are served by the Worker.
 | POST | `/api/buckets` | add an S3-compatible account; needs `storage:manage` |
 | DELETE | `/api/buckets/:id` | only when the account holds no files; needs `storage:manage` |
 | GET | `/api/files` | `folderId`, `q`, `status=trash` |
-| POST | `/api/files` | raw-body upload |
+| POST | `/api/files` | raw-body upload; the response carries the file's `sha256` |
 | PATCH | `/api/files/:id` | `name`, `folderId`, `starred` |
 | DELETE | `/api/files/:id` | move to trash |
 | POST | `/api/files/:id/restore` | |
@@ -214,6 +218,11 @@ All routes under `/api` and `/public` are served by the Worker.
 
 Error responses are `{ code, message }` with the HTTP status carrying the meaning.
 Unexpected errors return a generic 500 and are logged, never echoed back.
+
+The same list as an OpenAPI 3.1 document lives at `apps/web/public/openapi.json`,
+served from the deployment root as `/openapi.json`. It contains no credentials — only
+placeholder field names. `npm run openapi:check` fails if the spec and the routes in
+`apps/api/src/routes` disagree.
 
 ### API keys
 

@@ -33,7 +33,7 @@ cleanup() {
     disown "$pid" 2>/dev/null || true # keeps the shell from printing "Terminated"
   done
   wait 2>/dev/null
-  rm -f "$JAR" "$ANON" "$LOG" "$JAR.body"
+  rm -f "$JAR" "$ANON" "$LOG" "$JAR.body" "$JAR.body2"
 }
 trap cleanup EXIT
 
@@ -227,7 +227,18 @@ FILE_ID="$(printf '%s' "$UPLOAD" | jq -r .file.id)"
 expect "upload is 201" "true" "$([ -n "$FILE_ID" ] && [ "$FILE_ID" != "null" ] && echo true || echo false)"
 expect "the stored size matches" "$(wc -c < "$JAR.body" | tr -d ' ')" "$(printf '%s' "$UPLOAD" | jq -r .file.sizeBytes)"
 expect "the upload landed in the priority bucket" "$PRIMARY_ID" "$(printf '%s' "$UPLOAD" | jq -r .file.bucketId)"
-expect "a second upload is 201" 201 "$(ustatus "$JAR" second.txt "$JAR.body")"
+expect "the upload carries a sha256" "$(shasum -a 256 "$JAR.body" | cut -d' ' -f1)" \
+  "$(printf '%s' "$UPLOAD" | jq -r .file.sha256)"
+expect "a different file is 201" 201 "$(printf 'second file\n' > "$JAR.body2" && ustatus "$JAR" second.txt "$JAR.body2")"
+
+# The hash is informational: identical bytes are stored as a second file, not merged.
+TWIN="$(upload "$JAR" copy-of-report.txt "$JAR.body")"
+TWIN_ID="$(printf '%s' "$TWIN" | jq -r .file.id)"
+expect "the same bytes upload as a separate file" "true" \
+  "$([ -n "$TWIN_ID" ] && [ "$TWIN_ID" != "null" ] && [ "$TWIN_ID" != "$FILE_ID" ] && echo true || echo false)"
+expect "both copies share one sha256" "$(printf '%s' "$UPLOAD" | jq -r .file.sha256)" \
+  "$(printf '%s' "$TWIN" | jq -r .file.sha256)"
+expect "the duplicate copy is cleaned up" 200 "$(acode DELETE "/api/files/$TWIN_ID/permanent")"
 
 expect "listing returns both files" 2 "$(abody GET /api/files | jq '.files | length')"
 expect "search filters by name" 1 "$(abody GET '/api/files?q=report' | jq '.files | length')"

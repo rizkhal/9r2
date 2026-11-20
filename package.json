@@ -13,6 +13,7 @@
     "cf-bootstrap": "bun apps/cf-bootstrap/src/index.ts",
     "cf-dashboard": "node apps/cf-dashboard/src/index.mjs",
     "seed:9r2": "node scripts/seed-9r2.mjs",
+    "openapi:check": "node scripts/check-openapi.mjs",
     "deploy": "cd apps/web && vite build && cd ../.. && tsc -p apps/api && cd apps/api && wrangler deploy",
     "db:generate": "cd apps/api && drizzle-kit generate",
     "db:local": "cd apps/api && wrangler d1 migrations apply 9r2-db --local",

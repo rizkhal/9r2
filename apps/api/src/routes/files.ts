@@ -5,7 +5,7 @@ import { filePatchSchema, moveStorageSchema, type FileDTO, type ShareDTO } from 
 import { getDb } from '../db'
 import { buckets, files, folders, shares } from '../db/schema'
 import { maxUploadBytes, sessionSecret, type AppEnv } from '../env'
-import { decryptText, encryptText, randomToken, sha256Hex } from '../lib/crypto'
+import { decryptText, encryptText, hex, randomToken, sha256Hex } from '../lib/crypto'
 import { readJson } from '../lib/http'
 import { selectBucket } from '../lib/routing'
 import { providerFor } from '../lib/storage-provider'
@@ -20,6 +20,7 @@ type FileRow = {
   name: string
   mimeType: string
   sizeBytes: number
+  sha256: string | null
   folderId: string | null
   bucketId: string
   bucketName: string
@@ -33,6 +34,7 @@ export const fileSelection = {
   name: files.name,
   mimeType: files.mimeType,
   sizeBytes: files.sizeBytes,
+  sha256: files.sha256,
   folderId: files.folderId,
   bucketId: files.bucketId,
   bucketName: buckets.name,
@@ -47,6 +49,7 @@ export function toFileDTO(row: FileRow): FileDTO {
     name: row.name,
     mimeType: row.mimeType,
     sizeBytes: row.sizeBytes,
+    sha256: row.sha256,
     folderId: row.folderId,
     bucketId: row.bucketId,
     bucketName: row.bucketName,
@@ -165,7 +168,20 @@ fileRoutes.post('/', requireScope('files:write'), async (c) => {
 
   const id = crypto.randomUUID()
   const key = `${user.id}/${id}`
-  const storedSize = await provider.put(key, body, mimeType, sizeBytes)
+
+  // Hash the bytes as they stream to storage; the digest is only known afterwards.
+  let storedSize: number
+  let sha256: string
+  try {
+    const [toStorage, toDigest] = body.tee()
+    const digest = new crypto.DigestStream('SHA-256')
+    const [size] = await Promise.all([provider.put(key, toStorage, mimeType, sizeBytes), toDigest.pipeTo(digest)])
+    storedSize = size
+    sha256 = hex(await digest.digest)
+  } catch (error) {
+    await provider.delete(key).catch(() => undefined)
+    throw error
+  }
 
   // The declared size is client-controlled; trust what the provider actually stored.
   if (storedSize !== sizeBytes) {
@@ -184,6 +200,7 @@ fileRoutes.post('/', requireScope('files:write'), async (c) => {
       name,
       mimeType,
       sizeBytes,
+      sha256,
       createdAt: now,
       updatedAt: now,
     })
@@ -199,6 +216,7 @@ fileRoutes.post('/', requireScope('files:write'), async (c) => {
         name,
         mimeType,
         sizeBytes,
+        sha256,
         folderId,
         bucketId: bucket.id,
         bucketName: bucket.name,

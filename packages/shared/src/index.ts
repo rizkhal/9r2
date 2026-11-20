@@ -65,6 +65,8 @@ export type FileDTO = {
   name: string
   mimeType: string
   sizeBytes: number
+  /** SHA-256 of the content. Null for files stored before hashing existed. */
+  sha256: string | null
   folderId: string | null
   bucketId: string
   bucketName: string
