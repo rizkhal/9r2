@@ -1,20 +1,23 @@
-import { sqliteTable, text, integer, index, uniqueIndex } from 'drizzle-orm/sqlite-core'
+import { pgTable, text, bigint, index, uniqueIndex } from 'drizzle-orm/pg-core'
 
-export const users = sqliteTable(
+/** Epoch-ms and byte counts are bigint: Date.now() (~1.7e12) overflows int4. */
+const epoch = (name: string) => bigint(name, { mode: 'number' })
+
+export const users = pgTable(
   'users',
   {
     id: text('id').primaryKey(),
     email: text('email').notNull(),
     name: text('name').notNull(),
     routingMode: text('routing_mode').notNull().default('most_available'),
-    roundRobinCursor: integer('round_robin_cursor').notNull().default(0),
+    roundRobinCursor: bigint('round_robin_cursor', { mode: 'number' }).notNull().default(0),
     priorityBucketIds: text('priority_bucket_ids').notNull().default('[]'),
-    createdAt: integer('created_at').notNull(),
+    createdAt: epoch('created_at').notNull(),
   },
   (t) => [uniqueIndex('users_email_idx').on(t.email)],
 )
 
-export const sessions = sqliteTable(
+export const sessions = pgTable(
   'sessions',
   {
     id: text('id').primaryKey(),
@@ -22,23 +25,22 @@ export const sessions = sqliteTable(
       .notNull()
       .references(() => users.id, { onDelete: 'cascade' }),
     tokenHash: text('token_hash').notNull(),
-    expiresAt: integer('expires_at').notNull(),
-    createdAt: integer('created_at').notNull(),
+    expiresAt: epoch('expires_at').notNull(),
+    createdAt: epoch('created_at').notNull(),
   },
   (t) => [uniqueIndex('sessions_token_idx').on(t.tokenHash)],
 )
 
 /** One row per storage account a user may upload to.
- *  kind 'binding' — a wrangler R2 binding, resolved through env[binding].
- *  kind 's3'      — any S3-compatible endpoint; binding holds a synthetic `s3:<id>` placeholder. */
-export const buckets = sqliteTable(
+ *  kind 's3' — any S3-compatible endpoint; `binding` holds a synthetic `s3:<id>` placeholder. */
+export const buckets = pgTable(
   'buckets',
   {
     id: text('id').primaryKey(),
     userId: text('user_id')
       .notNull()
       .references(() => users.id, { onDelete: 'cascade' }),
-    kind: text('kind').notNull().default('binding'),
+    kind: text('kind').notNull().default('s3'),
     binding: text('binding').notNull(),
     name: text('name').notNull(),
     bucketName: text('bucket_name'),
@@ -46,15 +48,15 @@ export const buckets = sqliteTable(
     region: text('region'),
     accessKeyIdEncrypted: text('access_key_id_encrypted'),
     secretAccessKeyEncrypted: text('secret_access_key_encrypted'),
-    quotaBytes: integer('quota_bytes'),
-    priority: integer('priority').notNull().default(0),
-    createdAt: integer('created_at').notNull(),
+    quotaBytes: bigint('quota_bytes', { mode: 'number' }),
+    priority: bigint('priority', { mode: 'number' }).notNull().default(0),
+    createdAt: epoch('created_at').notNull(),
   },
   (t) => [uniqueIndex('buckets_user_binding_idx').on(t.userId, t.binding)],
 )
 
 /** Keys are shown once and stored hashed; the prefix is for identifying a key in the UI. */
-export const apiKeys = sqliteTable(
+export const apiKeys = pgTable(
   'api_keys',
   {
     id: text('id').primaryKey(),
@@ -65,14 +67,14 @@ export const apiKeys = sqliteTable(
     keyPrefix: text('key_prefix').notNull(),
     keyHash: text('key_hash').notNull(),
     scopes: text('scopes').notNull().default('[]'),
-    lastUsedAt: integer('last_used_at'),
-    revokedAt: integer('revoked_at'),
-    createdAt: integer('created_at').notNull(),
+    lastUsedAt: epoch('last_used_at'),
+    revokedAt: epoch('revoked_at'),
+    createdAt: epoch('created_at').notNull(),
   },
   (t) => [uniqueIndex('api_keys_hash_idx').on(t.keyHash), index('api_keys_user_idx').on(t.userId)],
 )
 
-export const folders = sqliteTable(
+export const folders = pgTable(
   'folders',
   {
     id: text('id').primaryKey(),
@@ -81,13 +83,13 @@ export const folders = sqliteTable(
       .references(() => users.id, { onDelete: 'cascade' }),
     parentId: text('parent_id'),
     name: text('name').notNull(),
-    createdAt: integer('created_at').notNull(),
-    deletedAt: integer('deleted_at'),
+    createdAt: epoch('created_at').notNull(),
+    deletedAt: epoch('deleted_at'),
   },
   (t) => [index('folders_user_parent_idx').on(t.userId, t.parentId)],
 )
 
-export const files = sqliteTable(
+export const files = pgTable(
   'files',
   {
     id: text('id').primaryKey(),
@@ -101,18 +103,18 @@ export const files = sqliteTable(
     key: text('key').notNull(),
     name: text('name').notNull(),
     mimeType: text('mime_type').notNull(),
-    sizeBytes: integer('size_bytes').notNull(),
+    sizeBytes: bigint('size_bytes', { mode: 'number' }).notNull(),
     /** SHA-256 of the content, filled on upload. Null for rows stored before hashing existed. */
     sha256: text('sha256'),
-    starredAt: integer('starred_at'),
-    deletedAt: integer('deleted_at'),
-    createdAt: integer('created_at').notNull(),
-    updatedAt: integer('updated_at').notNull(),
+    starredAt: epoch('starred_at'),
+    deletedAt: epoch('deleted_at'),
+    createdAt: epoch('created_at').notNull(),
+    updatedAt: epoch('updated_at').notNull(),
   },
   (t) => [index('files_user_folder_idx').on(t.userId, t.folderId), index('files_user_deleted_idx').on(t.userId, t.deletedAt)],
 )
 
-export const shares = sqliteTable(
+export const shares = pgTable(
   'shares',
   {
     id: text('id').primaryKey(),
@@ -124,8 +126,8 @@ export const shares = sqliteTable(
       .references(() => files.id, { onDelete: 'cascade' }),
     tokenHash: text('token_hash').notNull(),
     tokenEncrypted: text('token_encrypted').notNull(),
-    expiresAt: integer('expires_at'),
-    createdAt: integer('created_at').notNull(),
+    expiresAt: epoch('expires_at'),
+    createdAt: epoch('created_at').notNull(),
   },
   (t) => [uniqueIndex('shares_token_idx').on(t.tokenHash), index('shares_file_idx').on(t.fileId)],
 )

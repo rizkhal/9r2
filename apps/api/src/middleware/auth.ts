@@ -8,9 +8,9 @@ import { SESSION_COOKIE, type AppEnv } from '../env'
 import { sha256Hex } from '../lib/crypto'
 
 /** Session cookie → user, or null. Shared by every auth path. */
-export async function sessionUser(env: AppEnv['Bindings'], token: string | undefined) {
+export async function sessionUser(token: string | undefined) {
   if (!token) return null
-  const rows = await getDb(env.DB)
+  const rows = await getDb()
     .select({ expiresAt: sessions.expiresAt, id: users.id, name: users.name, email: users.email })
     .from(sessions)
     .innerJoin(users, eq(users.id, sessions.userId))
@@ -24,7 +24,7 @@ export async function sessionUser(env: AppEnv['Bindings'], token: string | undef
 }
 
 export const requireAuth = createMiddleware<AppEnv>(async (c, next) => {
-  const user = await sessionUser(c.env, getCookie(c, SESSION_COOKIE))
+  const user = await sessionUser(getCookie(c, SESSION_COOKIE))
   if (!user) throw new HTTPException(401, { message: 'Authentication required.' })
   c.set('user', user)
   await next()
@@ -41,13 +41,13 @@ export function requireScope(scope: string) {
     const header = c.req.header('authorization')
 
     if (!header?.startsWith('Bearer ')) {
-      const user = await sessionUser(c.env, getCookie(c, SESSION_COOKIE))
+      const user = await sessionUser(getCookie(c, SESSION_COOKIE))
       if (!user) throw new HTTPException(401, { message: 'Authentication required.' })
       c.set('user', user)
       return next()
     }
 
-    const db = getDb(c.env.DB)
+    const db = getDb()
     const key = (
       await db.select().from(apiKeys).where(eq(apiKeys.keyHash, await sha256Hex(header.slice(7).trim()))).limit(1)
     )[0]

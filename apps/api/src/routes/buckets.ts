@@ -13,13 +13,13 @@ export const bucketRoutes = new Hono<AppEnv>()
 
 /** Readable with an API key so a script can find the ids that move-storage takes. */
 bucketRoutes.get('/', requireScope('files:read'), async (c) => {
-  const list = await loadBuckets(getDb(c.env.DB), c.get('user').id)
+  const list = await loadBuckets(getDb(), c.get('user').id)
   const buckets: BucketSummaryDTO[] = list.map(bucketSummary)
   return c.json({ buckets })
 })
 
 bucketRoutes.get('/:id', requireScope('files:read'), async (c) => {
-  const list = await loadBuckets(getDb(c.env.DB), c.get('user').id)
+  const list = await loadBuckets(getDb(), c.get('user').id)
   const bucket = list.find((item) => item.id === c.req.param('id'))
   if (!bucket) throw new HTTPException(404, { message: 'Storage account not found.' })
   return c.json({ bucket: bucketSummary(bucket) })
@@ -29,11 +29,11 @@ bucketRoutes.get('/:id', requireScope('files:read'), async (c) => {
  *  point uploads at storage the key holder controls. */
 bucketRoutes.post('/', requireScope('storage:manage'), async (c) => {
   const body = await readJson(c, storageAccountSchema)
-  const id = await createStorageAccount(c.env, getDb(c.env.DB), c.get('user').id, body)
+  const id = await createStorageAccount(c.env, getDb(), c.get('user').id, body)
   return c.json({ id }, 201)
 })
 
 bucketRoutes.delete('/:id', requireScope('storage:manage'), async (c) => {
-  await removeStorageAccount(getDb(c.env.DB), c.get('user').id, c.req.param('id'))
+  await removeStorageAccount(getDb(), c.get('user').id, c.req.param('id'))
   return c.json({ status: 'ok' })
 })

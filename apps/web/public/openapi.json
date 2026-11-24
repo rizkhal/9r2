@@ -133,7 +133,7 @@
           "404": { "description": "`x-folder-id` does not name one of your folders" },
           "409": { "description": "No storage account has enough free space" },
           "411": { "description": "`Content-Length` missing" },
-          "413": { "description": "Larger than `MAX_UPLOAD_BYTES`" },
+          "413": { "description": "Body exceeds Cloudflare's platform request-body limit (100 MB on Free/Pro, 500 MB on Enterprise); returned by the edge, not this API" },
           "502": { "$ref": "#/components/responses/StorageError" }
         }
       }

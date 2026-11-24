@@ -1,7 +1,8 @@
 import { eq, sql } from 'drizzle-orm'
 import type { Db } from '../db'
 import { buckets, files, users } from '../db/schema'
-import type { BucketConfig } from '../env'
+import type { SeedBucket } from '../env'
+import { encryptText } from './crypto'
 
 export type BucketUsage = {
   id: string
@@ -104,22 +105,28 @@ export function parseIds(value: unknown) {
   }
 }
 
-/** Creates the user's bucket rows from the deployment's wrangler bindings. */
-export async function seedBuckets(db: Db, userId: string, configs: BucketConfig[]) {
+/** Creates the user's storage-account rows from SEED_BUCKETS. Idempotent on (userId, binding). */
+export async function seedBuckets(db: Db, userId: string, configs: SeedBucket[], secret: string) {
   if (configs.length === 0) return
-  await db
-    .insert(buckets)
-    .values(
-      configs.map((config, index) => ({
+  const rows = await Promise.all(
+    configs.map(async (config, index) => {
+      const endpoint = config.endpoint.replace(/\/+$/, '')
+      return {
         id: crypto.randomUUID(),
         userId,
-        kind: 'binding',
-        binding: config.binding,
-        name: config.name || config.binding,
+        kind: 's3',
+        binding: `s3:${endpoint}/${config.bucketName}`,
+        name: config.name || config.bucketName,
+        bucketName: config.bucketName,
+        endpoint,
+        region: config.region || 'auto',
+        accessKeyIdEncrypted: await encryptText(secret, config.accessKeyId),
+        secretAccessKeyEncrypted: await encryptText(secret, config.secretAccessKey),
         quotaBytes: config.quotaBytes ?? null,
         priority: index,
         createdAt: Date.now(),
-      })),
-    )
-    .onConflictDoNothing()
+      }
+    }),
+  )
+  await db.insert(buckets).values(rows).onConflictDoNothing()
 }

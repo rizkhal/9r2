@@ -10,14 +10,13 @@
     "dev": "node scripts/dev.mjs",
     "build": "cd apps/web && vite build && cd ../.. && tsc -p apps/api",
     "typecheck": "tsc -p packages/shared && tsc -p apps/api && tsc -p apps/web && tsc -p apps/cf-bootstrap",
+    "start": "bun apps/api/src/server.ts",
+    "migrate": "bun apps/api/src/migrate.ts",
     "cf-bootstrap": "bun apps/cf-bootstrap/src/index.ts",
     "cf-dashboard": "node apps/cf-dashboard/src/index.mjs",
     "seed:9r2": "node scripts/seed-9r2.mjs",
     "openapi:check": "node scripts/check-openapi.mjs",
-    "deploy": "cd apps/web && vite build && cd ../.. && tsc -p apps/api && cd apps/api && wrangler deploy",
     "db:generate": "cd apps/api && drizzle-kit generate",
-    "db:local": "cd apps/api && wrangler d1 migrations apply 9r2-db --local",
-    "db:remote": "cd apps/api && wrangler d1 migrations apply 9r2-db --remote",
     "e2e": "bash scripts/e2e.sh"
   },
   "devDependencies": {

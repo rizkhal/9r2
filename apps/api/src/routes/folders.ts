@@ -19,7 +19,7 @@ folderRoutes.get('/', requireScope('files:read'), async (c) => {
   const filters = [eq(folders.userId, c.get('user').id), isNull(folders.deletedAt)]
   if (parentId !== undefined) filters.push(parentId === '' ? isNull(folders.parentId) : eq(folders.parentId, parentId))
 
-  const rows = await getDb(c.env.DB).select(folderColumns).from(folders).where(and(...filters))
+  const rows = await getDb().select(folderColumns).from(folders).where(and(...filters))
 
   const result: FolderDTO[] = rows
   return c.json({ folders: result })
@@ -27,7 +27,7 @@ folderRoutes.get('/', requireScope('files:read'), async (c) => {
 
 /** One folder with its child folders and files, so a script needs a single call. */
 folderRoutes.get('/:id', requireScope('files:read'), async (c) => {
-  const db = getDb(c.env.DB)
+  const db = getDb()
   const userId = c.get('user').id
   const id = c.req.param('id')
 
@@ -56,7 +56,7 @@ folderRoutes.get('/:id', requireScope('files:read'), async (c) => {
 
 folderRoutes.post('/', requireScope('files:write'), async (c) => {
   const body = await readJson(c, folderCreateSchema)
-  const db = getDb(c.env.DB)
+  const db = getDb()
   const userId = c.get('user').id
 
   if (body.parentId) {
@@ -80,7 +80,7 @@ folderRoutes.post('/', requireScope('files:write'), async (c) => {
 
 folderRoutes.patch('/:id', requireScope('files:write'), async (c) => {
   const body = await readJson(c, folderPatchSchema)
-  const db = getDb(c.env.DB)
+  const db = getDb()
   const userId = c.get('user').id
   const id = c.req.param('id')
 
@@ -112,7 +112,7 @@ folderRoutes.patch('/:id', requireScope('files:write'), async (c) => {
 })
 
 folderRoutes.delete('/:id', requireScope('files:write'), async (c) => {
-  const db = getDb(c.env.DB)
+  const db = getDb()
   const userId = c.get('user').id
   const id = c.req.param('id')
 

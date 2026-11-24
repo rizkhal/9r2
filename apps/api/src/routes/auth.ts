@@ -6,23 +6,28 @@ import { HTTPException } from 'hono/http-exception'
 import { loginSchema } from '@9r2/shared'
 import { getDb } from '../db'
 import { sessions, users } from '../db/schema'
-import {
-  SESSION_COOKIE,
-  SESSION_TTL_MS,
-  adminCredentials,
-  readBucketConfig,
-  type AppEnv,
-} from '../env'
+import { SESSION_COOKIE, SESSION_TTL_MS, adminCredentials, readSeedBuckets, sessionSecret, type AppEnv } from '../env'
 import { randomToken, sha256Hex } from '../lib/crypto'
 import { readJson } from '../lib/http'
+import { allow } from '../lib/rate-limit'
 import { seedBuckets } from '../lib/routing'
 import { sessionUser } from '../middleware/auth'
 
 export const authRoutes = new Hono<AppEnv>()
 
+/** Behind the Coolify/Traefik proxy the client address arrives in x-forwarded-for. */
+function clientIp(c: Context<AppEnv>) {
+  const forwarded = c.req.header('x-forwarded-for')
+  return forwarded?.split(',')[0]?.trim() || c.req.header('x-real-ip') || 'unknown'
+}
+
+async function syncSeedBuckets(env: AppEnv['Bindings'], userId: string) {
+  await seedBuckets(getDb(), userId, readSeedBuckets(env.SEED_BUCKETS), sessionSecret(env))
+}
+
 async function startSession(c: Context<AppEnv>, userId: string) {
   const token = randomToken()
-  await getDb(c.env.DB).insert(sessions).values({
+  await getDb().insert(sessions).values({
     id: crypto.randomUUID(),
     userId,
     tokenHash: await sha256Hex(token),
@@ -40,13 +45,13 @@ async function startSession(c: Context<AppEnv>, userId: string) {
 
 /** There is one account; its row is created on first sign-in so file FKs always resolve. */
 async function ensureAdminUser(env: AppEnv['Bindings'], email: string) {
-  const db = getDb(env.DB)
+  const db = getDb()
   const rows = await db.select().from(users).where(eq(users.email, email)).limit(1)
   if (rows[0]) return rows[0]
 
   const user = { id: crypto.randomUUID(), email, name: 'Administrator', createdAt: Date.now() }
   await db.insert(users).values(user)
-  await seedBuckets(db, user.id, readBucketConfig(env.BUCKET_CONFIG))
+  await syncSeedBuckets(env, user.id)
   return user
 }
 
@@ -58,8 +63,7 @@ async function sameValue(a: string, b: string) {
 }
 
 authRoutes.post('/login', async (c) => {
-  const ip = c.req.header('CF-Connecting-IP') ?? 'unknown'
-  if (!(await c.env.LOGIN_RATE_LIMITER.limit({ key: ip })).success) {
+  if (!allow(`login:${clientIp(c)}`)) {
     throw new HTTPException(429, { message: 'Too many login attempts. Try again in a minute.' })
   }
 
@@ -74,21 +78,21 @@ authRoutes.post('/login', async (c) => {
 
   const user = await ensureAdminUser(c.env, admin.email)
   await startSession(c, user.id)
-  await seedBuckets(getDb(c.env.DB), user.id, readBucketConfig(c.env.BUCKET_CONFIG))
+  await syncSeedBuckets(c.env, user.id)
   return c.json({ user: { id: user.id, name: user.name, email: user.email } })
 })
 
 authRoutes.post('/logout', async (c) => {
   const token = getCookie(c, SESSION_COOKIE)
   if (token) {
-    await getDb(c.env.DB).delete(sessions).where(eq(sessions.tokenHash, await sha256Hex(token)))
+    await getDb().delete(sessions).where(eq(sessions.tokenHash, await sha256Hex(token)))
   }
   deleteCookie(c, SESSION_COOKIE, { path: '/' })
   return c.json({ status: 'ok' })
 })
 
 authRoutes.get('/me', async (c) => {
-  const user = await sessionUser(c.env, getCookie(c, SESSION_COOKIE))
+  const user = await sessionUser(getCookie(c, SESSION_COOKIE))
   if (!user) throw new HTTPException(401, { message: 'Authentication required.' })
   return c.json({ user })
 })

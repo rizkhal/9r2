@@ -1,6 +1,6 @@
 import { AwsClient } from 'aws4fetch'
 import { HTTPException } from 'hono/http-exception'
-import { getR2, type Bindings } from '../env'
+import type { Bindings } from '../env'
 import { decryptText } from './crypto'
 
 export type BucketLike = {
@@ -23,39 +23,15 @@ export type StoredObject = {
   range?: { offset?: number; length?: number }
 }
 
-/** Both backends answer the same three calls, so callers never branch on kind. */
 export type StorageProvider = {
   put(key: string, body: ReadableStream, contentType: string, size: number): Promise<number>
   get(key: string, range?: Range): Promise<StoredObject | null>
   delete(key: string): Promise<void>
 }
 
+/** Every account is S3-compatible: an S3 endpoint reached over signed HTTP. */
 export function providerFor(env: Bindings, bucket: BucketLike): StorageProvider {
-  if (bucket.kind === 's3') return s3Provider(env, bucket)
-
-  const r2 = bucket.binding ? getR2(env, bucket.binding) : null
-  if (!r2) throw new HTTPException(503, { message: 'Storage bucket is not configured on this deployment.' })
-
-  return {
-    async put(key, body, contentType) {
-      const object = await r2.put(key, body, { httpMetadata: { contentType } })
-      if (!object) throw new HTTPException(502, { message: 'Upload failed.' })
-      return object.size
-    },
-    async get(key, range) {
-      const object = await r2.get(key, range ? { range: toR2Range(range) } : undefined)
-      if (!object) return null
-      return {
-        body: object.body,
-        size: object.size,
-        httpEtag: object.httpEtag,
-        range: object.range as { offset?: number; length?: number } | undefined,
-      }
-    },
-    async delete(key) {
-      await r2.delete(key)
-    },
-  }
+  return s3Provider(env, bucket)
 }
 
 function s3Provider(env: Bindings, bucket: BucketLike): StorageProvider {
@@ -69,7 +45,9 @@ function s3Provider(env: Bindings, bucket: BucketLike): StorageProvider {
         method: 'PUT',
         body,
         headers: { 'content-type': contentType, 'content-length': String(size) },
-      })
+        // Node/undici streams require half-duplex; Bun ignores it.
+        duplex: 'half',
+      } as RequestInit)
       if (!res.ok) throw upstream(res)
       return size
     },
@@ -115,12 +93,6 @@ function objectBase(bucket: BucketLike) {
   const endpoint = (bucket.endpoint ?? '').replace(/\/+$/, '')
   const name = bucket.bucketName ?? ''
   return (key: string) => `${endpoint}/${name}/${key.split('/').map(encodeURIComponent).join('/')}`
-}
-
-function toR2Range(range: Range): R2Range {
-  if (range.suffix !== undefined) return { suffix: range.suffix }
-  if (range.length !== undefined) return { offset: range.offset ?? 0, length: range.length }
-  return { offset: range.offset ?? 0 }
 }
 
 function toRangeHeader(range: Range) {
