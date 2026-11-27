@@ -4,7 +4,7 @@
     "title": "9r2 storage API",
     "version": "1.0.0",
     "summary": "Files, folders and storage accounts behind one sign-in.",
-    "description": "All routes are served by a single Worker. Two credentials are accepted:\n\n- **Session cookie** (`sid`, set by `POST /api/auth/login`) — full access, including storage accounts and API-key management.\n- **API key** (`Authorization: Bearer 9r2_…`) — scoped. A key reaches `/api/files`, `/api/folders` and `/api/buckets` only.\n\nErrors are `{ code, message }` with the HTTP status carrying the meaning."
+    "description": "Routes are served by one Bun process that also serves the SPA; file bytes live in S3-compatible storage (R2).\n\n## Credentials\n- **Session cookie** (`sid`, set by `POST /api/auth/login`) — full access, including storage accounts and API-key management.\n- **API key** (`Authorization: Bearer 9r2_…`) — scoped; reaches `/api/files`, `/api/folders`, `/api/buckets`, and the presign routes only.\n\n## Downloads\n`/api/files/{id}/content` streams bytes through this server. To keep the server out of the data path, use the presign routes: they return a short-lived signed URL the client fetches directly from storage. TTL defaults to 300s and this API caps it at 3600s; the storage platform hard-caps `X-Amz-Expires` at 604800s (7 days), so a longer lifetime is not possible.\n\n## Uploads\n`POST /api/files` streams the raw body straight to storage, so there is no app-level size cap. If this deployment sits behind Cloudflare's proxy, Cloudflare caps proxied request bodies at 100 MB (Free/Pro) or 500 MB (Enterprise) at the edge, before the request reaches the server.\n\n## Lookups\n`GET /api/files/by-sha256/{sha256}` finds an existing file by content hash so a client can skip re-uploading identical bytes.\n\nErrors are `{ code, message }` with the HTTP status carrying the meaning."
   },
   "servers": [{ "url": "/", "description": "This deployment" }],
   "tags": [
@@ -110,7 +110,7 @@
       "post": {
         "tags": ["files"],
         "summary": "Upload a file",
-        "description": "The raw bytes are the request body; metadata goes in headers. The body is streamed straight to storage and hashed on the way past, so `sha256` is only known once the upload completes. Identical content is stored as a separate file — the hash identifies, it does not deduplicate. Requires `files:write`.",
+        "description": "The raw bytes are the request body; metadata goes in headers. The body is streamed straight to storage and hashed on the way past, so `sha256` is only known once the upload completes. Identical content is stored as a separate file — the hash identifies, it does not deduplicate. Requires `files:write`. No app-level size cap; if behind Cloudflare's proxy the edge caps request bodies at 100 MB (Free/Pro) / 500 MB (Enterprise).",
         "security": [{ "sessionCookie": [] }, { "bearerAuth": [] }],
         "parameters": [
           { "name": "x-file-name", "in": "header", "required": true, "schema": { "type": "string" }, "description": "Percent-encoded file name." },
@@ -165,7 +165,7 @@
         "security": [{ "sessionCookie": [] }, { "bearerAuth": [] }],
         "requestBody": {
           "required": true,
-          "content": { "application/json": { "schema": { "type": "object", "required": ["ids"], "properties": { "ids": { "type": "array", "minItems": 1, "maxItems": 200, "items": { "type": "string" } }, "expires": { "type": "integer", "minimum": 1, "maximum": 3600, "description": "Seconds, default 300, capped at 3600." } } } } }
+          "content": { "application/json": { "schema": { "type": "object", "required": ["ids"], "properties": { "ids": { "type": "array", "minItems": 1, "maxItems": 200, "items": { "type": "string" } }, "expires": { "type": "integer", "minimum": 1, "maximum": 3600, "description": "Seconds; default 300, capped at 3600 by this API (storage caps at 604800 = 7 days)." } } } } }
         },
         "responses": {
           "200": { "description": "Signed URLs", "content": { "application/json": { "schema": { "type": "object", "properties": { "expiresIn": { "type": "integer" }, "urls": { "type": "array", "items": { "type": "object", "properties": { "id": { "type": "string" }, "url": { "type": "string" }, "error": { "type": "string" } } } } } } } } },
@@ -259,7 +259,7 @@
         "security": [{ "sessionCookie": [] }, { "bearerAuth": [] }],
         "parameters": [
           { "$ref": "#/components/parameters/FileId" },
-          { "name": "expires", "in": "query", "schema": { "type": "integer", "minimum": 1, "maximum": 3600 }, "description": "Seconds, default 300, capped at 3600." }
+          { "name": "expires", "in": "query", "schema": { "type": "integer", "minimum": 1, "maximum": 3600 }, "description": "Seconds; default 300, capped at 3600 by this API (storage caps at 604800 = 7 days)." }
         ],
         "responses": {
           "200": { "description": "Signed URL", "content": { "application/json": { "schema": { "type": "object", "properties": { "url": { "type": "string" }, "expiresIn": { "type": "integer" }, "expiresAt": { "type": "integer" } } } } } },
@@ -277,7 +277,7 @@
         "security": [{ "sessionCookie": [] }, { "bearerAuth": [] }],
         "parameters": [
           { "$ref": "#/components/parameters/FileId" },
-          { "name": "expires", "in": "query", "schema": { "type": "integer", "minimum": 1, "maximum": 3600 }, "description": "Seconds, default 300, capped at 3600." }
+          { "name": "expires", "in": "query", "schema": { "type": "integer", "minimum": 1, "maximum": 3600 }, "description": "Seconds; default 300, capped at 3600 by this API (storage caps at 604800 = 7 days)." }
         ],
         "responses": {
           "302": { "description": "Redirect to the signed storage URL", "headers": { "Location": { "schema": { "type": "string" } } } },
