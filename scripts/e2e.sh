@@ -16,6 +16,7 @@ PORT="${E2E_PORT:-8799}"
 BASE="http://localhost:$PORT"
 S3_A=9901
 S3_B=9902
+S3_P=9903
 JAR="$(mktemp)"
 ANON="$(mktemp)" # empty cookie jar, for calls that must not be signed in
 LOG="$(mktemp)"
@@ -37,7 +38,7 @@ cleanup() {
 }
 trap cleanup EXIT
 
-for port in "$PORT" "$S3_A" "$S3_B"; do
+for port in "$PORT" "$S3_A" "$S3_B" "$S3_P"; do
   if lsof -nP -iTCP:"$port" -sTCP:LISTEN > /dev/null 2>&1; then
     echo "port $port is already in use — stop that process or set E2E_PORT"
     exit 1
@@ -120,24 +121,40 @@ account_json() { # name port bucket
 
 # ---------------------------------------------------------------- environment
 
-printf 'Starting mock S3 on %s and %s\n' "$S3_A" "$S3_B"
+# The seed account lives on its own mock server: mock-s3 drops the bucket from the
+# path, so two buckets on one server would share storage and break move-storage.
+printf 'Starting mock S3 on %s, %s and %s\n' "$S3_A" "$S3_B" "$S3_P"
 node "$ROOT/scripts/mock-s3.mjs" "$S3_A" > /dev/null 2>&1 &
 PIDS+=($!)
 node "$ROOT/scripts/mock-s3.mjs" "$S3_B" > /dev/null 2>&1 &
 PIDS+=($!)
+node "$ROOT/scripts/mock-s3.mjs" "$S3_P" > /dev/null 2>&1 &
+PIDS+=($!)
 
-printf 'Wiping local D1 + R2 state\n'
-rm -rf "$ROOT/apps/api/.wrangler/state"
+export DATABASE_URL="${E2E_DATABASE_URL:-postgres://9r2:9r2@127.0.0.1:5433/9r2}"
+export SESSION_SECRET="e2e-secret"
+export ADMIN_EMAIL="admin@9r2.local"
+export ADMIN_PASSWORD="change-me-local-dev"
+# One S3 account is seeded at sign-in so uploads have somewhere to land.
+export SEED_BUCKETS="$(json --arg e "http://127.0.0.1:$S3_P" \
+  '[{name:"Primary",endpoint:$e,region:"auto",bucketName:"bucket-primary",accessKeyId:"AK",secretAccessKey:"SK"}]')"
+
+printf 'Resetting the test database schema\n'
+bun "$ROOT/scripts/db-reset.mjs" > "$LOG" 2>&1 || {
+  echo "db reset failed — is Postgres up on $DATABASE_URL? (docker compose -f docker-compose.dev.yml up -d)"
+  tail -30 "$LOG"
+  exit 1
+}
 
 printf 'Applying migrations to the fresh database\n'
-(cd "$ROOT/apps/api" && "$ROOT/node_modules/.bin/wrangler" d1 migrations apply 9r2-db --local > "$LOG" 2>&1) || {
+(cd "$ROOT/apps/api" && bun src/migrate.ts > "$LOG" 2>&1) || {
   echo "migrations failed; see below"
   tail -30 "$LOG"
   exit 1
 }
 
-printf 'Starting wrangler dev on %s\n' "$PORT"
-(cd "$ROOT/apps/api" && exec "$ROOT/node_modules/.bin/wrangler" dev --port "$PORT" > "$LOG" 2>&1) &
+printf 'Starting the API on %s\n' "$PORT"
+(cd "$ROOT/apps/api" && exec env PORT="$PORT" bun src/server.ts > "$LOG" 2>&1) &
 PIDS+=($!)
 
 for _ in $(seq 1 90); do
@@ -176,8 +193,8 @@ expect "signing in again reuses the same account" "$USER_ID" \
 
 section "Storage"
 expect "storage requires a session" 401 "$(code GET /api/storage)"
-expect "the wrangler bucket is seeded on first sign-in" 1 "$(abody GET /api/storage | jq '.buckets | length')"
-expect "the seeded bucket is a binding" "binding" "$(abody GET /api/storage | jq -r '.buckets[0].kind')"
+expect "a seed account is created on first sign-in" 1 "$(abody GET /api/storage | jq '.buckets | length')"
+expect "the seeded account is an S3 account" "s3" "$(abody GET /api/storage | jq -r '.buckets[0].kind')"
 PRIMARY_ID="$(abody GET /api/storage | jq -r '.buckets[0].id')"
 
 expect "test-connection against a live endpoint is 200" 200 \
@@ -195,7 +212,8 @@ expect "quota can be set" 200 "$(acode PATCH "/api/storage/buckets/$A_ID" "$(jso
 expect "routing policy can be set" 200 \
   "$(acode PUT /api/storage/policy "$(json --arg id "$PRIMARY_ID" '{mode:"priority",priorityBucketIds:[$id]}')")"
 expect "the policy reads back" "priority" "$(abody GET /api/storage | jq -r .routing.mode)"
-expect "a binding bucket cannot be removed" 400 "$(acode DELETE "/api/storage/accounts/$PRIMARY_ID")"
+expect "the seeded account has no quota by default" "null" \
+  "$(abody GET /api/storage | jq -r --arg id "$PRIMARY_ID" '.buckets[] | select(.id==$id) | (.quotaBytes // "null")')"
 
 # ------------------------------------------------------------------- folders
 
@@ -290,16 +308,16 @@ expect "moving to the same account is 400" 400 \
   "$(acode POST "/api/files/$FILE_ID/move-storage" "$(json --arg b "$PRIMARY_ID" '{bucketId:$b}')")"
 expect "moving to a bogus account is 404" 404 \
   "$(acode POST "/api/files/$FILE_ID/move-storage" "$(json '{bucketId:"nope"}')")"
-expect "moving R2 -> S3 is 200" 200 \
+expect "moving to another account is 200" 200 \
   "$(acode POST "/api/files/$FILE_ID/move-storage" "$(json --arg b "$A_ID" '{bucketId:$b}')")"
 expect "the row points at the new account" "$A_ID" "$(abody GET '/api/files?q=renamed' | jq -r '.files[0].bucketId')"
 expect "the bytes survived the move" "hello from e2e" "$(abody GET "/api/files/$FILE_ID/content")"
 expect "a ranged read still works after the move" "hello" "$(hbody "$JAR" 'Range: bytes=0-4' "/api/files/$FILE_ID/content")"
 expect "an account holding a file cannot be removed" 409 "$(acode DELETE "/api/storage/accounts/$A_ID")"
-expect "moving S3 -> S3 is 200" 200 \
+expect "moving between two S3 accounts is 200" 200 \
   "$(acode POST "/api/files/$FILE_ID/move-storage" "$(json --arg b "$B_ID" '{bucketId:$b}')")"
 expect "the bytes survived the second move" "hello from e2e" "$(abody GET "/api/files/$FILE_ID/content")"
-expect "moving S3 -> R2 is 200" 200 \
+expect "moving back to the seeded account is 200" 200 \
   "$(acode POST "/api/files/$FILE_ID/move-storage" "$(json --arg b "$PRIMARY_ID" '{bucketId:$b}')")"
 expect "the bytes survived the round trip" "hello from e2e" "$(abody GET "/api/files/$FILE_ID/content")"
 
@@ -351,7 +369,7 @@ C_ID="$(curl -s -H "Authorization: Bearer $STORAGE_KEY" -H 'content-type: applic
   -X POST "$BASE/api/buckets" -d "$(account_json "S3 C" "$S3_A" bucket-c)" | jq -r .id)"
 expect "a storage key can add a bucket" "true" "$([ -n "$C_ID" ] && [ "$C_ID" != "null" ] && echo true || echo false)"
 expect "the added bucket is readable" 200 "$(kcode "$STORAGE_KEY" GET "/api/buckets/$C_ID")"
-expect "a binding bucket cannot be deleted over the API" 400 "$(kcode "$STORAGE_KEY" DELETE "/api/buckets/$PRIMARY_ID")"
+expect "deleting a bogus account over the API is 404" 404 "$(kcode "$STORAGE_KEY" DELETE /api/buckets/nope)"
 expect "an empty account can be deleted over the API" 200 "$(kcode "$STORAGE_KEY" DELETE "/api/buckets/$C_ID")"
 expect "deleting it twice is 404" 404 "$(kcode "$STORAGE_KEY" DELETE "/api/buckets/$C_ID")"
 expect "a garbage key is 401" 401 "$(kcode 9r2_nope GET /api/files)"

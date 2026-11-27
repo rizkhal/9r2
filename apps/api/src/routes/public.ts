@@ -9,8 +9,8 @@ import { serveContent } from '../lib/stream'
 
 export const publicRoutes = new Hono<AppEnv>()
 
-async function findSharedFile(c: { env: AppEnv['Bindings'] }, token: string) {
-  const rows = await getDb(c.env.DB)
+async function findSharedFile(token: string) {
+  const rows = await getDb()
     .select({
       id: files.id,
       key: files.key,
@@ -35,13 +35,13 @@ async function findSharedFile(c: { env: AppEnv['Bindings'] }, token: string) {
 }
 
 publicRoutes.get('/files/:token', async (c) => {
-  const file = await findSharedFile(c, c.req.param('token'))
+  const file = await findSharedFile(c.req.param('token'))
   return c.json({
     file: { name: file.name, mimeType: file.mimeType, sizeBytes: file.sizeBytes, createdAt: file.createdAt },
   })
 })
 
 publicRoutes.get('/files/:token/content', async (c) => {
-  const file = await findSharedFile(c, c.req.param('token'))
+  const file = await findSharedFile(c.req.param('token'))
   return serveContent(c, file, c.req.query('download') === '1' ? 'attachment' : 'inline')
 })

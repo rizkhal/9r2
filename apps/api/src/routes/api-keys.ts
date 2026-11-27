@@ -27,7 +27,7 @@ function toDTO(row: typeof apiKeys.$inferSelect): ApiKeyDTO {
 }
 
 apiKeyRoutes.get('/', async (c) => {
-  const rows = await getDb(c.env.DB)
+  const rows = await getDb()
     .select()
     .from(apiKeys)
     .where(eq(apiKeys.userId, c.get('user').id))
@@ -49,13 +49,13 @@ apiKeyRoutes.post('/', async (c) => {
     revokedAt: null,
     createdAt: Date.now(),
   }
-  await getDb(c.env.DB).insert(apiKeys).values(key)
+  await getDb().insert(apiKeys).values(key)
   // The only time the secret is ever returned.
   return c.json({ apiKey: toDTO(key), secret }, 201)
 })
 
 apiKeyRoutes.delete('/:id', async (c) => {
-  const rows = await getDb(c.env.DB)
+  const rows = await getDb()
     .update(apiKeys)
     .set({ revokedAt: Date.now() })
     .where(and(eq(apiKeys.id, c.req.param('id')), eq(apiKeys.userId, c.get('user').id), isNull(apiKeys.revokedAt)))

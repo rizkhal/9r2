@@ -3,13 +3,12 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "dev": "wrangler d1 migrations apply 9r2-db --local && wrangler dev --port ${API_PORT:-8788}",
+    "dev": "bun --watch src/server.ts",
+    "start": "bun src/server.ts",
+    "migrate": "bun src/migrate.ts",
     "typecheck": "tsc --noEmit",
     "build": "tsc --noEmit",
-    "deploy": "wrangler deploy",
-    "db:generate": "drizzle-kit generate",
-    "db:migrate:local": "wrangler d1 migrations apply 9r2-db --local",
-    "db:migrate:remote": "wrangler d1 migrations apply 9r2-db --remote"
+    "db:generate": "drizzle-kit generate"
   },
   "dependencies": {
     "@9r2/shared": "workspace:*",
@@ -19,9 +18,8 @@
     "zod": "^4.6.7"
   },
   "devDependencies": {
-    "@cloudflare/workers-types": "^5.20261118.1",
+    "@types/bun": "^1.4.5",
     "drizzle-kit": "^0.31.11",
-    "typescript": "^5.9.3",
-    "wrangler": "^4.164.0"
+    "typescript": "^5.9.3"
   }
 }

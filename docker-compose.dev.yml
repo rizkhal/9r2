@@ -1,0 +1,20 @@
+# Local Postgres for `bun run dev` and `bun run e2e`. Port 5433 avoids a system Postgres.
+services:
+  db:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_USER: 9r2
+      POSTGRES_PASSWORD: 9r2
+      POSTGRES_DB: 9r2
+    ports:
+      - '5433:5432'
+    volumes:
+      - 9r2-db-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U 9r2']
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+volumes:
+  9r2-db-data:

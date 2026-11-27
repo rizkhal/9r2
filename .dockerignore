@@ -1,0 +1,16 @@
+node_modules
+**/node_modules
+**/dist
+.git
+.gitignore
+.env
+*.log
+.wrangler
+
+# Local secrets and harvesting tools are not part of the image.
+apps/api/.9r2-key
+apps/cf-dashboard
+cf-access-keys.json
+cf-dashboard-tokens.json
+cf-dashboard-run.log
+accounts.json

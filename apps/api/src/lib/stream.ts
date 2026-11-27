@@ -14,7 +14,7 @@ export async function serveContent(
   file: StreamableFile,
   disposition: 'inline' | 'attachment',
 ) {
-  const bucketRows = await getDb(c.env.DB).select().from(buckets).where(eq(buckets.id, file.bucketId)).limit(1)
+  const bucketRows = await getDb().select().from(buckets).where(eq(buckets.id, file.bucketId)).limit(1)
   const bucketRow = bucketRows[0]
   if (!bucketRow) throw new HTTPException(404, { message: 'Storage bucket not found.' })
 

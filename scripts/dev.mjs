@@ -1,6 +1,5 @@
-// Starts the API worker and the Vite dev server side by side.
-// Runs under bun and npm alike: it calls the local binaries directly instead of
-// shelling out to a package manager.
+// Starts the Bun API and the Vite dev server side by side against a local Postgres.
+// Runs under node or bun: it calls the local binaries directly instead of a package manager.
 import { spawn } from 'node:child_process'
 import { existsSync, readFileSync, writeFileSync } from 'node:fs'
 import net from 'node:net'
@@ -32,39 +31,37 @@ async function pickApiPort() {
   throw new Error(`No free port between ${start} and ${start + 19}. Set API_PORT to something else.`)
 }
 
-function run(name, args, cwd) {
-  return new Promise((resolve, reject) => {
-    const child = spawn(bin(name), args, { cwd, stdio: 'inherit' })
-    child.on('error', reject)
-    child.on('exit', (code) => (code === 0 ? resolve() : reject(new Error(`${name} exited with code ${code}`))))
-  })
-}
-
-// wrangler dev refuses to start when the assets directory is missing.
-if (!existsSync(path.join(webDir, 'dist/index.html'))) {
-  console.log('Building the SPA once so the worker has an assets directory…')
-  await run('vite', ['build'], webDir)
-}
-
-// Local-only sign-in; .dev.vars is gitignored.
-const devVars = path.join(apiDir, '.dev.vars')
+// Local-only config; .env is gitignored. A stable SESSION_SECRET survives restarts.
+const envFile = path.join(root, '.env')
 const defaults = {
+  DATABASE_URL: process.env.DATABASE_URL ?? 'postgres://9r2:9r2@127.0.0.1:5433/9r2',
   SESSION_SECRET: randomBytes(32).toString('hex'),
   ADMIN_EMAIL: 'admin@9r2.local',
   ADMIN_PASSWORD: 'change-me-local-dev',
 }
-const existingVars = existsSync(devVars) ? readFileSync(devVars, 'utf8') : ''
-const missing = Object.entries(defaults).filter(([key]) => !existingVars.includes(`${key}=`))
+const existingEnv = existsSync(envFile) ? readFileSync(envFile, 'utf8') : ''
+const missing = Object.entries(defaults).filter(([key]) => !existingEnv.includes(`${key}=`))
 if (missing.length > 0) {
   const added = missing.map(([key, value]) => `${key}=${value}`).join('\n')
-  writeFileSync(devVars, existingVars ? `${existingVars.replace(/\n*$/, '\n')}${added}\n` : `${added}\n`)
-  console.log(`Added missing keys to apps/api/.dev.vars: ${missing.map(([key]) => key).join(', ')}`)
+  writeFileSync(envFile, existingEnv ? `${existingEnv.replace(/\n*$/, '\n')}${added}\n` : `${added}\n`)
+  console.log(`Added missing keys to .env: ${missing.map(([key]) => key).join(', ')}`)
   if (missing.some(([key]) => key === 'ADMIN_PASSWORD')) {
     console.log('Local sign-in: admin@9r2.local / change-me-local-dev')
   }
 }
+for (const line of readFileSync(envFile, 'utf8').split('\n')) {
+  const match = /^([A-Za-z_][A-Za-z0-9_]*)=(.*)$/.exec(line.trim())
+  if (match && process.env[match[1]] === undefined) process.env[match[1]] = match[2]
+}
 
-await run('wrangler', ['d1', 'migrations', 'apply', '9r2-db', '--local'], apiDir)
+// Postgres has to be reachable; docker-compose.dev.yml brings one up.
+console.log('Applying migrations…')
+const migrate = spawn('bun', ['src/migrate.ts'], { cwd: apiDir, stdio: 'inherit', env: process.env })
+const migrateCode = await new Promise((resolve) => migrate.on('exit', resolve))
+if (migrateCode !== 0) {
+  console.error('\nMigrations failed. Is Postgres up? Try: docker compose -f docker-compose.dev.yml up -d')
+  process.exit(migrateCode ?? 1)
+}
 
 const apiPort = await pickApiPort()
 if (apiPort !== Number(process.env.API_PORT ?? 8788)) {
@@ -72,10 +69,10 @@ if (apiPort !== Number(process.env.API_PORT ?? 8788)) {
 }
 
 const procs = [
-  spawn(bin('wrangler'), ['dev', '--port', String(apiPort)], {
+  spawn('bun', ['--watch', 'src/server.ts'], {
     cwd: apiDir,
     stdio: 'inherit',
-    env: { ...process.env, API_PORT: String(apiPort) },
+    env: { ...process.env, PORT: String(apiPort) },
   }),
   // Vite reads API_PORT to build its proxy target, so it follows the port chosen above.
   spawn(bin('vite'), [], { cwd: webDir, stdio: 'inherit', env: { ...process.env, API_PORT: String(apiPort) } }),

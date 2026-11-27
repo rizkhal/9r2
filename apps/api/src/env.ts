@@ -1,14 +1,12 @@
 import { HTTPException } from 'hono/http-exception'
 
+/** Values arrive from the process environment (filled in per request by server.ts). */
 export type Bindings = {
-  DB: D1Database
-  LOGIN_RATE_LIMITER: RateLimit
   SESSION_SECRET: string
-  /** Single-account login: no registration. Set both as wrangler secrets. */
   ADMIN_EMAIL: string
   ADMIN_PASSWORD: string
-  BUCKET_CONFIG: string
-  MAX_UPLOAD_BYTES?: string
+  /** JSON array of S3 accounts seeded for a new account, so a fresh install has storage. */
+  SEED_BUCKETS?: string
   ENVIRONMENT?: string
 }
 
@@ -24,32 +22,34 @@ export type AppEnv = {
 export const SESSION_COOKIE = 'sid'
 export const SESSION_TTL_MS = 30 * 24 * 60 * 60 * 1000
 
-export type BucketConfig = { binding: string; name: string; quotaBytes?: number | null }
+export type SeedBucket = {
+  name?: string
+  endpoint: string
+  region?: string
+  bucketName: string
+  accessKeyId: string
+  secretAccessKey: string
+  quotaBytes?: number | null
+}
 
-/** Reads the bucket list from wrangler vars. Bad JSON means no buckets, not a crash. */
-export function readBucketConfig(raw: string | undefined): BucketConfig[] {
+/** Reads the seed list from SEED_BUCKETS. Bad JSON means no seeds, not a crash. */
+export function readSeedBuckets(raw: string | undefined): SeedBucket[] {
   if (!raw) return []
   try {
     const parsed: unknown = JSON.parse(raw)
     if (!Array.isArray(parsed)) return []
     return parsed.filter(
-      (item): item is BucketConfig =>
-        typeof item === 'object' && item !== null && typeof (item as BucketConfig).binding === 'string',
+      (item): item is SeedBucket =>
+        typeof item === 'object' &&
+        item !== null &&
+        typeof (item as SeedBucket).endpoint === 'string' &&
+        typeof (item as SeedBucket).bucketName === 'string' &&
+        typeof (item as SeedBucket).accessKeyId === 'string' &&
+        typeof (item as SeedBucket).secretAccessKey === 'string',
     )
   } catch {
     return []
   }
-}
-
-export function getR2(env: Bindings, binding: string): R2Bucket | null {
-  const bucket = (env as unknown as Record<string, unknown>)[binding]
-  return bucket ? (bucket as R2Bucket) : null
-}
-
-export function maxUploadBytes(env: Bindings): number {
-  const value = Number(env.MAX_UPLOAD_BYTES ?? 0)
-  // Workers caps request bodies at 100 MB on the Free/Pro plans.
-  return Number.isFinite(value) && value > 0 ? value : 100 * 1024 * 1024
 }
 
 export function sessionSecret(env: Bindings): string {
@@ -63,7 +63,7 @@ export function sessionSecret(env: Bindings): string {
 export function adminCredentials(env: Bindings): { email: string; password: string } {
   if (!env.ADMIN_EMAIL || !env.ADMIN_PASSWORD) {
     throw new HTTPException(500, {
-      message: 'ADMIN_EMAIL and ADMIN_PASSWORD must be set (wrangler secret put, or .dev.vars locally).',
+      message: 'ADMIN_EMAIL and ADMIN_PASSWORD must be set (environment variables, or .env locally).',
     })
   }
   return { email: env.ADMIN_EMAIL.trim().toLowerCase(), password: env.ADMIN_PASSWORD }

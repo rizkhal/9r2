@@ -1,1 +1,0 @@
-ALTER TABLE `files` ADD `sha256` text;
