@@ -23,10 +23,18 @@ export type StoredObject = {
   range?: { offset?: number; length?: number }
 }
 
+/** Both backends answer the same three calls, so callers never branch on kind. */
+export type PresignOptions = {
+  expiresSeconds?: number
+  /** When set, the URL forces the response headers (S3 signs them into the query). */
+  response?: { name: string; mimeType: string }
+}
+
 export type StorageProvider = {
   put(key: string, body: ReadableStream, contentType: string, size: number): Promise<number>
   get(key: string, range?: Range): Promise<StoredObject | null>
   delete(key: string): Promise<void>
+  presign(key: string, method: 'GET' | 'PUT', options?: PresignOptions): Promise<string>
 }
 
 /** Every account is S3-compatible: an S3 endpoint reached over signed HTTP. */
@@ -67,6 +75,21 @@ function s3Provider(env: Bindings, bucket: BucketLike): StorageProvider {
     async delete(key) {
       const res = await (await client).fetch(base(key), { method: 'DELETE' })
       if (!res.ok && res.status !== 404) throw upstream(res)
+    },
+    async presign(key, method, options = {}) {
+      const expires = Math.min(Math.max(Math.floor(options.expiresSeconds ?? 300), 1), 604800)
+      const url = new URL(base(key))
+      // S3 reads the TTL from X-Amz-Expires; pre-setting it before signing is the supported hook.
+      url.searchParams.set('X-Amz-Expires', String(expires))
+      if (options.response) {
+        url.searchParams.set('response-content-type', options.response.mimeType)
+        url.searchParams.set(
+          'response-content-disposition',
+          `attachment; filename*=UTF-8''${encodeURIComponent(options.response.name)}`,
+        )
+      }
+      const signed = await (await client).sign(url.toString(), { method, aws: { signQuery: true } })
+      return signed.url
     },
   }
 }

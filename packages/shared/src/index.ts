@@ -42,6 +42,12 @@ export const apiKeyCreateSchema = z.object({
 
 export const moveStorageSchema = z.object({ bucketId: z.string().min(1) })
 
+/** Batch presign: mint download URLs for several files in one call. */
+export const presignBatchSchema = z.object({
+  ids: z.array(z.string().min(1)).min(1).max(200),
+  expires: z.number().int().positive().max(3600).optional(),
+})
+
 /** A storage account added from the UI: any S3-compatible endpoint. */
 export const storageAccountSchema = z.object({
   name: z.string().trim().min(1).max(80),

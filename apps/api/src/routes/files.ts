@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto'
 import { and, desc, eq, ilike, isNotNull, isNull, sql } from 'drizzle-orm'
 import { Hono } from 'hono'
 import { HTTPException } from 'hono/http-exception'
-import { filePatchSchema, moveStorageSchema, type FileDTO, type ShareDTO } from '@9r2/shared'
+import { filePatchSchema, moveStorageSchema, presignBatchSchema, type FileDTO, type ShareDTO } from '@9r2/shared'
 import { getDb } from '../db'
 import { buckets, files, folders, shares } from '../db/schema'
 import { sessionSecret, type AppEnv } from '../env'
@@ -70,6 +70,35 @@ async function findFile(userId: string, fileId: string, includeDeleted = false) 
   const file = rows[0]
   if (!file) throw new HTTPException(404, { message: 'File not found.' })
   return file
+}
+
+async function bucketById(bucketId: string) {
+  const rows = await getDb().select().from(buckets).where(eq(buckets.id, bucketId)).limit(1)
+  const row = rows[0]
+  if (!row) throw new HTTPException(404, { message: 'Storage bucket not found.' })
+  return row
+}
+
+const PRESIGN_DEFAULT_SECONDS = 300
+const PRESIGN_MAX_SECONDS = 3600
+
+function presignSeconds(raw: string | undefined) {
+  const value = Number(raw)
+  if (!Number.isFinite(value) || value <= 0) return PRESIGN_DEFAULT_SECONDS
+  return Math.min(Math.floor(value), PRESIGN_MAX_SECONDS)
+}
+
+/** Signs a direct-to-R2 GET so an external app can fetch without bytes through this server. */
+async function presignDownload(
+  env: AppEnv['Bindings'],
+  file: { key: string; name: string; mimeType: string; bucketId: string },
+  expiresSeconds: number,
+) {
+  const bucket = await bucketById(file.bucketId)
+  return providerFor(env, bucket).presign(file.key, 'GET', {
+    expiresSeconds,
+    response: { name: file.name, mimeType: file.mimeType },
+  })
 }
 
 fileRoutes.get('/', requireScope('files:read'), async (c) => {
@@ -389,4 +418,36 @@ fileRoutes.delete('/:id/share', requireScope('files:write'), async (c) => {
   const file = await findFile(user.id, c.req.param('id'))
   await getDb().delete(shares).where(and(eq(shares.fileId, file.id), eq(shares.userId, user.id)))
   return c.json({ status: 'ok' })
+})
+
+/** Time-limited direct-to-R2 download URL. Expiry is capped so a leaked URL stays short-lived. */
+fileRoutes.get('/:id/presign', requireScope('files:read'), async (c) => {
+  const file = await findFile(c.get('user').id, c.req.param('id'))
+  const expiresIn = presignSeconds(c.req.query('expires'))
+  const url = await presignDownload(c.env, file, expiresIn)
+  return c.json({ url, expiresIn, expiresAt: Date.now() + expiresIn * 1000 })
+})
+
+/** Stable URL for external apps: always 302s to a freshly-signed download, so links never expire. */
+fileRoutes.get('/:id/redirect', requireScope('files:read'), async (c) => {
+  const file = await findFile(c.get('user').id, c.req.param('id'))
+  const url = await presignDownload(c.env, file, presignSeconds(c.req.query('expires')))
+  return c.redirect(url, 302)
+})
+
+/** Mint several download URLs at once. Unknown/trashed ids return an error entry, not a batch failure. */
+fileRoutes.post('/presign', requireScope('files:read'), async (c) => {
+  const body = await readJson(c, presignBatchSchema)
+  const userId = c.get('user').id
+  const expiresIn = Math.min(body.expires ?? PRESIGN_DEFAULT_SECONDS, PRESIGN_MAX_SECONDS)
+  const urls: Array<{ id: string; url?: string; error?: string }> = []
+  for (const id of body.ids) {
+    try {
+      const file = await findFile(userId, id)
+      urls.push({ id, url: await presignDownload(c.env, file, expiresIn) })
+    } catch {
+      urls.push({ id, error: 'not_found' })
+    }
+  }
+  return c.json({ expiresIn, urls })
 })

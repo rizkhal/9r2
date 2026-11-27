@@ -138,6 +138,24 @@
         }
       }
     },
+    "/api/files/presign": {
+      "post": {
+        "tags": ["files"],
+        "summary": "Batch presign download URLs",
+        "description": "Mints short-lived direct-to-storage download URLs for up to 200 files in one call. Each URL points at the bucket's own endpoint, so the caller fetches bytes without them passing through this server. Requires `files:read`. Unknown or trashed ids come back with `error: not_found`.",
+        "security": [{ "sessionCookie": [] }, { "bearerAuth": [] }],
+        "requestBody": {
+          "required": true,
+          "content": { "application/json": { "schema": { "type": "object", "required": ["ids"], "properties": { "ids": { "type": "array", "minItems": 1, "maxItems": 200, "items": { "type": "string" } }, "expires": { "type": "integer", "minimum": 1, "maximum": 3600, "description": "Seconds, default 300, capped at 3600." } } } } }
+        },
+        "responses": {
+          "200": { "description": "Signed URLs", "content": { "application/json": { "schema": { "type": "object", "properties": { "expiresIn": { "type": "integer" }, "urls": { "type": "array", "items": { "type": "object", "properties": { "id": { "type": "string" }, "url": { "type": "string" }, "error": { "type": "string" } } } } } } } } },
+          "400": { "$ref": "#/components/responses/BadRequest" },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "403": { "$ref": "#/components/responses/Forbidden" }
+        }
+      }
+    },
     "/api/files/{id}": {
       "patch": {
         "tags": ["files"],
@@ -208,6 +226,42 @@
         "parameters": [{ "$ref": "#/components/parameters/FileId" }],
         "responses": {
           "200": { "$ref": "#/components/responses/Ok" },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "403": { "$ref": "#/components/responses/Forbidden" },
+          "404": { "$ref": "#/components/responses/NotFound" }
+        }
+      }
+    },
+    "/api/files/{id}/presign": {
+      "get": {
+        "tags": ["files"],
+        "summary": "Presign a download URL",
+        "description": "Returns a short-lived direct-to-storage URL for one file. Fetching it does not pass bytes through this server and does not need the API key. Requires `files:read` to mint.",
+        "security": [{ "sessionCookie": [] }, { "bearerAuth": [] }],
+        "parameters": [
+          { "$ref": "#/components/parameters/FileId" },
+          { "name": "expires", "in": "query", "schema": { "type": "integer", "minimum": 1, "maximum": 3600 }, "description": "Seconds, default 300, capped at 3600." }
+        ],
+        "responses": {
+          "200": { "description": "Signed URL", "content": { "application/json": { "schema": { "type": "object", "properties": { "url": { "type": "string" }, "expiresIn": { "type": "integer" }, "expiresAt": { "type": "integer" } } } } } },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "403": { "$ref": "#/components/responses/Forbidden" },
+          "404": { "$ref": "#/components/responses/NotFound" }
+        }
+      }
+    },
+    "/api/files/{id}/redirect": {
+      "get": {
+        "tags": ["files"],
+        "summary": "Redirect to a fresh download URL",
+        "description": "Stable, never-expiring URL for external apps: always answers 302 to a freshly-signed direct-to-storage URL. Requires `files:read`.",
+        "security": [{ "sessionCookie": [] }, { "bearerAuth": [] }],
+        "parameters": [
+          { "$ref": "#/components/parameters/FileId" },
+          { "name": "expires", "in": "query", "schema": { "type": "integer", "minimum": 1, "maximum": 3600 }, "description": "Seconds, default 300, capped at 3600." }
+        ],
+        "responses": {
+          "302": { "description": "Redirect to the signed storage URL", "headers": { "Location": { "schema": { "type": "string" } } } },
           "401": { "$ref": "#/components/responses/Unauthorized" },
           "403": { "$ref": "#/components/responses/Forbidden" },
           "404": { "$ref": "#/components/responses/NotFound" }
