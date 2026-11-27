@@ -47,6 +47,9 @@ async function serveStatic(pathname: string): Promise<Response> {
 
 const server = Bun.serve({
   port: Number(process.env.PORT ?? 8788),
+  // Bun defaults to a 128 MB request body; uploads stream straight to storage,
+  // so lift it. The real ceiling is the host/disk, not this process.
+  maxRequestBodySize: Number.MAX_SAFE_INTEGER,
   async fetch(req) {
     const { pathname } = new URL(req.url)
     if (isApi(pathname)) return app.fetch(req, bindings())

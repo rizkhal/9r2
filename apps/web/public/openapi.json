@@ -138,6 +138,25 @@
         }
       }
     },
+    "/api/files/by-sha256/{sha256}": {
+      "get": {
+        "tags": ["files"],
+        "summary": "Find a file by content hash",
+        "description": "Returns the newest file whose SHA-256 matches, so a client can tell whether these exact bytes are already stored before uploading again. Trashed rows are skipped unless `?status=trash`. Requires `files:read`.",
+        "security": [{ "sessionCookie": [] }, { "bearerAuth": [] }],
+        "parameters": [
+          { "name": "sha256", "in": "path", "required": true, "schema": { "type": "string", "pattern": "^[0-9a-f]{64}$" } },
+          { "name": "status", "in": "query", "schema": { "type": "string", "enum": ["trash"] } }
+        ],
+        "responses": {
+          "200": { "description": "Matching file", "content": { "application/json": { "schema": { "type": "object", "properties": { "file": { "$ref": "#/components/schemas/File" } } } } } },
+          "400": { "$ref": "#/components/responses/BadRequest" },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "403": { "$ref": "#/components/responses/Forbidden" },
+          "404": { "$ref": "#/components/responses/NotFound" }
+        }
+      }
+    },
     "/api/files/presign": {
       "post": {
         "tags": ["files"],

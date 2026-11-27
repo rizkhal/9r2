@@ -197,15 +197,25 @@ fileRoutes.post('/', requireScope('files:write'), async (c) => {
   const key = `${user.id}/${id}`
 
   // Hash the bytes in the same pass that streams them to storage; no tee, no buffering.
+  // A hand-rolled ReadableStream, not body.pipeThrough(): Bun 1.3.x dies with
+  // "TypeError: undefined is not a function" inside pipeState on large request bodies
+  // (~14 MB was enough to kill the process), which turned every big PDF into a 502.
   const hash = createHash('sha256')
-  const tapped = body.pipeThrough(
-    new TransformStream<Uint8Array, Uint8Array>({
-      transform(chunk, controller) {
-        hash.update(chunk)
-        controller.enqueue(chunk)
-      },
-    }),
-  )
+  const reader = body.getReader()
+  const tapped = new ReadableStream<Uint8Array>({
+    async pull(controller) {
+      const { value, done } = await reader.read()
+      if (done) {
+        controller.close()
+        return
+      }
+      hash.update(value)
+      controller.enqueue(value)
+    },
+    cancel(reason) {
+      return reader.cancel(reason)
+    },
+  })
 
   let storedSize: number
   try {
@@ -260,6 +270,33 @@ fileRoutes.post('/', requireScope('files:write'), async (c) => {
     },
     201,
   )
+})
+
+/** Look up by content hash, so a client that lost its own bookkeeping can tell
+ *  whether these exact bytes are already stored instead of uploading them twice.
+ *  Newest first; trashed rows are skipped unless ?status=trash. */
+fileRoutes.get('/by-sha256/:sha256', requireScope('files:read'), async (c) => {
+  const user = c.get('user')
+  const sha256 = c.req.param('sha256').toLowerCase()
+  if (!/^[0-9a-f]{64}$/.test(sha256)) throw new HTTPException(400, { message: 'sha256 must be 64 hex characters.' })
+
+  const trash = c.req.query('status') === 'trash'
+  const rows = await getDb()
+    .select(fileSelection)
+    .from(files)
+    .innerJoin(buckets, eq(buckets.id, files.bucketId))
+    .where(
+      and(
+        eq(files.userId, user.id),
+        eq(files.sha256, sha256),
+        trash ? isNotNull(files.deletedAt) : isNull(files.deletedAt),
+      ),
+    )
+    .orderBy(desc(files.createdAt))
+    .limit(1)
+  const row = rows[0]
+  if (!row) throw new HTTPException(404, { message: 'No file with that sha256.' })
+  return c.json({ file: toFileDTO(row) })
 })
 
 fileRoutes.patch('/:id', requireScope('files:write'), async (c) => {

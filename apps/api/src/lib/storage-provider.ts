@@ -57,7 +57,11 @@ function s3Provider(env: Bindings, bucket: BucketLike): StorageProvider {
         duplex: 'half',
       } as RequestInit)
       if (!res.ok) throw upstream(res)
-      return size
+      // Report what the provider holds, not what we claimed in Content-Length: the
+      // caller compares the two and deletes the object on a mismatch.
+      const head = await (await client).fetch(base(key), { method: 'HEAD' }).catch(() => null)
+      const stored = head?.ok ? Number(head.headers.get('content-length')) : NaN
+      return Number.isFinite(stored) && stored > 0 ? stored : size
     },
     async get(key, range) {
       const headers: Record<string, string> = {}
